@@ -1,0 +1,23 @@
+# Android
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+
+# App build
+/app/build
+/app/release
+
+# WorkBuddy
+.workbuddy/memory/
+
+# Keystore (sensitive credentials)
+/keystore/
+
+# OS
+Thumbs.db

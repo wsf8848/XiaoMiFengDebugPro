@@ -1,0 +1,8 @@
+<resources>
+    <color name="beige_bg">#F6EBCF</color>
+    <color name="beige_surface">#FFF8E8</color>
+    <color name="beige_card">#FFF4DD</color>
+    <color name="beige_text">#5C4724</color>
+    <color name="beige_primary">#D8B66A</color>
+    <color name="beige_primary_dark">#B68D3C</color>
+</resources>
