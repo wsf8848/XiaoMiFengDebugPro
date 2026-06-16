@@ -221,6 +221,7 @@ private fun AppScreen() {
     var showPairDialog by rememberSaveable { mutableStateOf(false) }
     var pairInput by rememberSaveable { mutableStateOf("") }
     var pendingDevice by remember { mutableStateOf<BleDeviceItem?>(null) }
+    var selectedDevice by remember { mutableStateOf<BleDeviceItem?>(null) }
 
     val scanDevices = remember { mutableStateListOf<BleDeviceItem>() }
     val prefs: SharedPreferences = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
@@ -362,10 +363,6 @@ private fun AppScreen() {
                 modifier = Modifier.fillMaxSize().padding(paddingValues).background(BeigeColors.background)
             ) {
                 if (isLoggedIn) {
-                    val onDeviceConnect: (BleDeviceItem) -> Unit = { item ->
-                        pendingDevice = item; pairInput = ""; showPairDialog = true
-                    }
-
                     ModalNavigationDrawer(
                         drawerState = drawerState,
                         drawerContent = {
@@ -376,20 +373,28 @@ private fun AppScreen() {
                                 isScanning = isScanning,
                                 isConnecting = isConnecting,
                                 isConnected = isConnected,
-                                searchJustFinished = searchJustFinished,
+                                selectedDevice = selectedDevice,
                                 onSearchClick = {
                                     if (isScanning) {
                                         isScanning = false; searchJustFinished = true
                                         latestMessage = "搜索已手动停止。"; doSpeak("搜索已停止"); doVibrate()
-                                    } else if (isConnected) {
-                                        bleConnector.disconnect()
                                     } else if (hasBluetoothPermissions(context)) {
-                                        isScanning = true
+                                        selectedDevice = null; isScanning = true
                                     } else {
                                         permissionRequestTrigger += 1
                                     }
                                 },
-                                onDeviceClick = onDeviceConnect,
+                                onDeviceClick = { item ->
+                                    selectedDevice = if (selectedDevice?.address == item.address) null else item
+                                },
+                                onConnectClick = {
+                                    val dev = selectedDevice ?: return@DrawerPage
+                                    if (isConnected) {
+                                        bleConnector.disconnect()
+                                    } else {
+                                        pendingDevice = dev; pairInput = ""; showPairDialog = true
+                                    }
+                                },
                                 onBackClick = {
                                     doSpeak("返回主页面"); doVibrate()
                                     scope.launch { drawerState.close() }
@@ -420,8 +425,10 @@ private fun AppScreen() {
                             onSendClick = {
                                 if (!isConnected) {
                                     latestMessage = "发送失败：当前未连接蓝牙设备。"
+                                    doSpeak("发送失败，未连接设备"); doVibrate()
                                 } else if (sendHex && parseHexInput(sendInput) == null) {
                                     latestMessage = "发送失败：HEX 格式错误。"
+                                    doSpeak("发送失败，格式错误"); doVibrate()
                                 } else {
                                     val bytes = if (sendHex) parseHexInput(sendInput)!! else sendInput.toByteArray(StandardCharsets.UTF_8)
                                     if (bleConnector.send(bytes)) {
@@ -429,6 +436,7 @@ private fun AppScreen() {
                                         doSpeak("已发送"); doVibrate()
                                     } else {
                                         latestMessage = "发送失败：写特征不可用"
+                                        doSpeak("发送失败"); doVibrate()
                                     }
                                 }
                             },
@@ -466,6 +474,8 @@ private fun AppScreen() {
                             dismissButton = { Button(onClick = { showPairDialog = false }) { Text("取消") } }
                         )
                     }
+                    // AlertDialog 这里是被 isLoggedIn 包裹的，没问题
+                } else if (loaded) {
                     LoginPage(
                         account = account, password = password, code = code,
                         rememberPassword = rememberPassword, rememberCode = rememberCode,
@@ -640,36 +650,29 @@ private fun DrawerPage(
     connectedName: String, connectedAddress: String,
     devices: List<BleDeviceItem>,
     isScanning: Boolean, isConnecting: Boolean, isConnected: Boolean,
-    searchJustFinished: Boolean,
-    onSearchClick: () -> Unit, onDeviceClick: (BleDeviceItem) -> Unit, onBackClick: () -> Unit
+    selectedDevice: BleDeviceItem?,
+    onSearchClick: () -> Unit, onDeviceClick: (BleDeviceItem) -> Unit,
+    onConnectClick: () -> Unit, onBackClick: () -> Unit
 ) {
-    val buttonText = when {
-        isConnecting -> "连接中..."
-        isScanning -> "搜索中...（点击停止）"
-        searchJustFinished -> "搜索完成"
-        isConnected -> "设备已连接"
-        else -> "⌁  搜索蓝牙设备"
-    }
-
     ModalDrawerSheet(Modifier.fillMaxHeight(), drawerContainerColor = BeigeColors.background) {
         Column(Modifier.fillMaxSize()) {
-            // 顶部横幅 — 紧凑
+            // 顶部横幅
             Column(Modifier.fillMaxWidth().background(BeigeColors.topBar).padding(vertical = 24.dp, horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                Text("v1.1.0", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                Text("v1.1.1", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(12.dp))
 
-            // 「返回主页面」— 紧凑
+            // 「返回主页面」
             Button(onClick = onBackClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(36.dp),
                 shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB89B5E))) {
                 Text("← 返回主页面", color = Color.White, fontSize = 14.sp)
             }
             Spacer(Modifier.height(10.dp))
 
-            // 连接状态 — 紧凑
+            // 连接状态
             Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp), colors = CardDefaults.cardColors(containerColor = Color.White),
                 shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)) {
                 Column(Modifier.padding(12.dp)) {
@@ -683,13 +686,36 @@ private fun DrawerPage(
                     Spacer(Modifier.height(6.dp)); Text(connectedAddress, color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
 
-            // 搜索按钮 — 紧凑
-            Button(onClick = onSearchClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(46.dp),
+            // 按钮1: 搜索 / 停止搜索（一次点击一次切换）
+            Button(onClick = onSearchClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(44.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = if (isConnected && !isScanning && !searchJustFinished) Color(0xFF2E7D32) else BeigeColors.primary)) {
-                Text(buttonText, color = Color.White, fontSize = 16.sp)
+                colors = ButtonDefaults.buttonColors(containerColor = BeigeColors.primary)) {
+                Text(if (isScanning) "■ 停止搜索" else "⌁  搜索蓝牙设备", color = Color.White, fontSize = 16.sp)
+            }
+            Spacer(Modifier.height(10.dp))
+
+            // 按钮2: 连接 / 断开（一次点击一次切换）
+            Button(
+                onClick = onConnectClick,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(44.dp),
+                shape = RoundedCornerShape(14.dp),
+                enabled = !isScanning && (isConnected || selectedDevice != null),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isConnected) Color(0xFFC62828) else Color(0xFF2E7D32),
+                    disabledContainerColor = Color(0xFFCCCCCC)
+                )
+            ) {
+                Text(
+                    when {
+                        isConnecting -> "连接中..."
+                        isConnected -> "断开设备"
+                        selectedDevice != null -> "连接：${selectedDevice!!.name}"
+                        else -> "请先点击设备"
+                    },
+                    color = Color.White, fontSize = 16.sp
+                )
             }
             Spacer(Modifier.height(12.dp))
 
@@ -700,18 +726,26 @@ private fun DrawerPage(
             }
             Spacer(Modifier.height(6.dp)); HorizontalDivider(color = BeigeColors.border)
 
+            // 设备列表（可选中高亮）
             if (devices.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.TopCenter) {
-                    Text(if (isConnected) "设备已连接，可点上方按钮重新搜索"
-                    else "未发现设备",
+                    Text(if (isScanning) "正在搜索..." else if (isConnected) "设备已连接" else "未发现设备",
                         color = BeigeColors.hint, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
                 }
             } else {
                 LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(devices) { item ->
-                        Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp).clickable { onDeviceClick(item) },
-                            colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
-                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        val isSelected = selectedDevice?.address == item.address
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp)
+                                .clickable { onDeviceClick(item) }
+                                .then(if (isSelected) Modifier.border(2.dp, BeigeColors.primary, RoundedCornerShape(12.dp)) else Modifier),
+                            colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFFFFF3D6) else Color.White),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(Modifier.padding(10.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text(item.name, color = BeigeColors.text, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                                     Spacer(Modifier.height(2.dp))
@@ -802,12 +836,24 @@ private class BleConnector(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun send(bytes: ByteArray): Boolean {
+        val g = gatt ?: return false
         val c = writeChar ?: return false
-        c.value = bytes
-        c.writeType = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+        val writeType = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
             BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        return if (gatt?.writeCharacteristic(c) == true) { emit(BleConnEvent.Sent(bytes)); true } else false
+        return if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                g.writeCharacteristic(c, bytes, writeType)
+                emit(BleConnEvent.Sent(bytes))
+                true
+            } catch (_: Exception) { false }
+        } else {
+            @Suppress("DEPRECATION")
+            c.value = bytes
+            c.writeType = writeType
+            @Suppress("DEPRECATION")
+            if (g.writeCharacteristic(c)) { emit(BleConnEvent.Sent(bytes)); true } else false
+        }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
