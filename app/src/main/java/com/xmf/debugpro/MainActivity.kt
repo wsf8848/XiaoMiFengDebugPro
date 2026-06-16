@@ -4,7 +4,13 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
@@ -43,6 +49,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -84,9 +91,11 @@ import com.xmf.debugpro.ui.theme.BeigeColors
 import com.xmf.debugpro.ui.theme.XiaoMiFengTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 private data class BleDeviceItem(
     val name: String,
@@ -98,7 +107,8 @@ private data class BleDeviceItem(
 private data class LogEntry(
     val timestamp: String,
     val direction: String,
-    val text: String
+    val text: String,
+    val isSent: Boolean
 )
 
 private const val EXPECTED_ACCOUNT = "FYX"
@@ -112,6 +122,8 @@ private const val KEY_CODE = "code"
 private const val KEY_REMEMBER = "remember"
 private const val KEY_LAST_DEVICE_NAME = "last_device_name"
 private const val KEY_LAST_DEVICE_ADDRESS = "last_device_address"
+
+private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -202,21 +214,27 @@ private fun AppScreen() {
     var latestMessage by rememberSaveable { mutableStateOf("等待连接数据...") }
     var connectedName by rememberSaveable { mutableStateOf("未连接") }
     var connectedAddress by rememberSaveable { mutableStateOf("--") }
+    var isConnected by rememberSaveable { mutableStateOf(false) }
     var welcomePlayed by rememberSaveable { mutableStateOf(false) }
     var searchJustFinished by rememberSaveable { mutableStateOf(false) }
+    // 配对对话框
+    var showPairDialog by rememberSaveable { mutableStateOf(false) }
+    var pairInput by rememberSaveable { mutableStateOf("") }
+    var pendingDevice by remember { mutableStateOf<BleDeviceItem?>(null) }
 
     val scanDevices = remember { mutableStateListOf<BleDeviceItem>() }
     val prefs: SharedPreferences = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
     val bleManager = remember { BleHelper(context) }
+    val bleConnector = remember { BleConnector(context) }
     val tts = remember { TtsHelper(context) }
 
     val doVibrate = { vibrateShort(context) }
     val doSpeak: (String) -> Unit = { tts.speak(it) }
 
-    val appendLog: (direction: String, text: String) -> Unit = { direction, msg ->
+    val appendLog: (isSent: Boolean, text: String) -> Unit = { sent, msg ->
         logEntries.add(LogEntry(
             timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()),
-            direction = direction, text = msg
+            direction = if (sent) "TX" else "RX", text = msg, isSent = sent
         ))
     }
 
@@ -227,6 +245,38 @@ private fun AppScreen() {
             isScanning = true
         } else {
             latestMessage = "蓝牙权限未授权，无法搜索设备。"
+        }
+    }
+
+    // ── BLE 连接事件监听 ──
+    LaunchedEffect(Unit) {
+        bleConnector.setEventListener { event ->
+            when (event) {
+                is BleConnEvent.Connected -> {
+                    isConnecting = false; isConnected = true
+                    connectedName = event.item.name; connectedAddress = event.item.address
+                    latestMessage = "连接成功：${event.item.name}"
+                    doSpeak("连接成功${event.item.name}"); doVibrate()
+                    prefs.edit().putString(KEY_LAST_DEVICE_NAME, event.item.name).putString(KEY_LAST_DEVICE_ADDRESS, event.item.address).apply()
+                    scope.launch { drawerState.close() }
+                }
+                is BleConnEvent.Disconnected -> {
+                    isConnecting = false; isConnected = false
+                    connectedName = "未连接"; connectedAddress = "--"
+                    latestMessage = event.reason
+                    doSpeak("设备已断开"); doVibrate()
+                }
+                is BleConnEvent.Received -> {
+                    val hx = event.bytes.joinToString(" ") { b -> "%02X".format(b) }
+                    val u8 = try { event.bytes.toString(StandardCharsets.UTF_8).replace("\r","").replace("\n","\\n") } catch (_:Exception) { "" }
+                    appendLog(false, if (receiveHex) hx else (u8.ifBlank { "<$hx>" }))
+                }
+                is BleConnEvent.Sent -> {
+                    val hx = event.bytes.joinToString(" ") { b -> "%02X".format(b) }
+                    val u8 = try { event.bytes.toString(StandardCharsets.UTF_8).replace("\r","").replace("\n","\\n") } catch (_:Exception) { "" }
+                    appendLog(true, if (sendHex) hx else u8)
+                }
+            }
         }
     }
 
@@ -249,7 +299,7 @@ private fun AppScreen() {
         val lastName = prefs.getString(KEY_LAST_DEVICE_NAME, "") ?: ""
         val lastAddr = prefs.getString(KEY_LAST_DEVICE_ADDRESS, "") ?: ""
         if (lastName.isNotBlank()) {
-            connectedName = lastName; connectedAddress = lastAddr
+            connectedName = lastName; connectedAddress = lastAddr; isConnected = true
         }
         loaded = true
     }
@@ -302,7 +352,7 @@ private fun AppScreen() {
     }
 
     DisposableEffect(Unit) {
-        onDispose { bleManager.stopScan(); tts.destroy() }
+        onDispose { bleManager.stopScan(); bleConnector.disconnect(); tts.destroy() }
     }
 
     // ── 界面 ──
@@ -313,17 +363,7 @@ private fun AppScreen() {
             ) {
                 if (isLoggedIn) {
                     val onDeviceConnect: (BleDeviceItem) -> Unit = { item ->
-                        connectedName = item.name; connectedAddress = item.address
-                        isScanning = false; isConnecting = false
-                        appendLog("SYS", "已连接 ${item.name} (${item.address})")
-                        latestMessage = "连接成功：${item.name}"
-                        doSpeak("连接成功${item.name}"); doVibrate()
-                        // 保存设备记忆
-                        prefs.edit()
-                            .putString(KEY_LAST_DEVICE_NAME, item.name)
-                            .putString(KEY_LAST_DEVICE_ADDRESS, item.address)
-                            .apply()
-                        scope.launch { drawerState.close() }
+                        pendingDevice = item; pairInput = ""; showPairDialog = true
                     }
 
                     ModalNavigationDrawer(
@@ -335,15 +375,14 @@ private fun AppScreen() {
                                 devices = scanDevices,
                                 isScanning = isScanning,
                                 isConnecting = isConnecting,
-                                isConnected = connectedName != "未连接",
+                                isConnected = isConnected,
                                 searchJustFinished = searchJustFinished,
                                 onSearchClick = {
                                     if (isScanning) {
-                                        // 搜索中点击 → 打断搜索
-                                        isScanning = false
-                                        searchJustFinished = true
-                                        latestMessage = "搜索已手动停止。"
-                                        doSpeak("搜索已停止"); doVibrate()
+                                        isScanning = false; searchJustFinished = true
+                                        latestMessage = "搜索已手动停止。"; doSpeak("搜索已停止"); doVibrate()
+                                    } else if (isConnected) {
+                                        bleConnector.disconnect()
                                     } else if (hasBluetoothPermissions(context)) {
                                         isScanning = true
                                     } else {
@@ -376,21 +415,57 @@ private fun AppScreen() {
                             sendInput = sendInput,
                             onSendInputChange = { sendInput = it },
                             connectedName = connectedName,
+                            isConnected = isConnected,
                             onMenuClick = { scope.launch { drawerState.open() } },
                             onSendClick = {
-                                if (connectedName == "未连接") {
+                                if (!isConnected) {
                                     latestMessage = "发送失败：当前未连接蓝牙设备。"
                                 } else if (sendHex && parseHexInput(sendInput) == null) {
-                                    latestMessage = "发送失败：HEX 格式错误，请使用 AA 55 01 格式。"
+                                    latestMessage = "发送失败：HEX 格式错误。"
                                 } else {
-                                    appendLog("TX", if (sendHex) sendInput else "\"$sendInput\"")
-                                    latestMessage = "已发送指令。"
+                                    val bytes = if (sendHex) parseHexInput(sendInput)!! else sendInput.toByteArray(StandardCharsets.UTF_8)
+                                    if (bleConnector.send(bytes)) {
+                                        latestMessage = "已发送 ${bytes.size} 字节"
+                                        doSpeak("已发送"); doVibrate()
+                                    } else {
+                                        latestMessage = "发送失败：写特征不可用"
+                                    }
                                 }
                             },
-                            onClearLog = { logEntries.clear(); latestMessage = "接收区已清空。" }
+                            onClearLog = {
+                                logEntries.clear(); latestMessage = "接收区已清空。"
+                                doSpeak("已清空接收区"); doVibrate()
+                            }
                         )
                     }
-                } else if (loaded) {
+
+                    // ── 配对码对话框 ──
+                    if (showPairDialog && pendingDevice != null) {
+                        AlertDialog(
+                            onDismissRequest = { showPairDialog = false },
+                            title = { Text("配对码", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column {
+                                    Text("设备：${pendingDevice!!.name}", style = MaterialTheme.typography.bodyMedium)
+                                    Spacer(Modifier.height(4.dp)); Text(pendingDevice!!.address, color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
+                                    Spacer(Modifier.height(12.dp)); Text("需要配对码请输入，否则直接连接", style = MaterialTheme.typography.bodySmall, color = BeigeColors.hint)
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedTextField(pairInput, { pairInput = it }, Modifier.fillMaxWidth(), label = { Text("配对码/PIN") }, singleLine = true)
+                                }
+                            },
+                            confirmButton = {
+                                Button(onClick = {
+                                    showPairDialog = false; val dev = pendingDevice ?: return@Button
+                                    isConnecting = true; isScanning = false
+                                    if (pairInput.isNotBlank()) { try { dev.device?.createBond() } catch (_: Exception) {} }
+                                    latestMessage = "正在连接 ${dev.name} ..."
+                                    doSpeak("正在连接"); doVibrate()
+                                    bleConnector.connect(dev)
+                                }) { Text("连接") }
+                            },
+                            dismissButton = { Button(onClick = { showPairDialog = false }) { Text("取消") } }
+                        )
+                    }
                     LoginPage(
                         account = account, password = password, code = code,
                         rememberPassword = rememberPassword, rememberCode = rememberCode,
@@ -474,8 +549,8 @@ private fun MainPage(
     receiveHex: Boolean, onReceiveHexChange: (Boolean) -> Unit,
     sendHex: Boolean, onSendHexChange: (Boolean) -> Unit,
     sendInput: String, onSendInputChange: (String) -> Unit,
-    connectedName: String, onMenuClick: () -> Unit,
-    onSendClick: () -> Unit, onClearLog: () -> Unit
+    connectedName: String, isConnected: Boolean,
+    onMenuClick: () -> Unit, onSendClick: () -> Unit, onClearLog: () -> Unit
 ) {
     val logListState = rememberLazyListState()
     LaunchedEffect(logEntries.size) { if (logEntries.isNotEmpty()) logListState.animateScrollToItem(logEntries.lastIndex) }
@@ -487,7 +562,7 @@ private fun MainPage(
             Text("☰", color = Color.White, style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { onMenuClick() })
             Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp), fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("●", color = if (connectedName != "未连接") Color(0xFF2E7D32) else BeigeColors.offline, fontSize = 10.sp)
+                Text("●", color = if (isConnected) Color(0xFF2E7D32) else BeigeColors.offline, fontSize = 10.sp)
                 Spacer(Modifier.width(4.dp)); Text(connectedName, color = Color(0xFFFFD9D9), style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -521,7 +596,9 @@ private fun MainPage(
                         }
                     } else {
                         LazyColumn(Modifier.fillMaxSize(), state = logListState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(logEntries) { e -> Text("[${e.timestamp}] ${e.direction}: ${e.text}", color = BeigeColors.text, style = MaterialTheme.typography.bodySmall) }
+                            items(logEntries) { e -> Text("[${e.timestamp}] ${e.direction}: ${e.text}",
+                                color = if (e.isSent) Color(0xFF2E7D32) else Color.Black,
+                                style = MaterialTheme.typography.bodySmall) }
                         }
                     }
                 }
@@ -581,7 +658,7 @@ private fun DrawerPage(
                 Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                Text("v1.0.9", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                Text("v1.1.0", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(12.dp))
 
@@ -665,6 +742,151 @@ private fun parseHexInput(input: String): ByteArray? {
     val n = input.trim().replace("\n", " ").replace("\r", " ")
     if (n.isBlank()) return byteArrayOf()
     return try { n.split(" ").filter { it.isNotBlank() }.map { it.toInt(16).toByte() }.toByteArray() } catch (_: Exception) { null }
+}
+
+// ─── BLE 连接事件 ──────────────────────────────────────────────────────
+
+private sealed class BleConnEvent {
+    data class Connected(val item: BleDeviceItem) : BleConnEvent()
+    data class Disconnected(val reason: String) : BleConnEvent()
+    data class Received(val bytes: ByteArray) : BleConnEvent()
+    data class Sent(val bytes: ByteArray) : BleConnEvent()
+}
+
+// ─── 真实 BLE 连接器 ───────────────────────────────────────────────────
+
+private class BleConnector(private val context: Context) {
+    private val adapter: BluetoothAdapter? = (context.getSystemService(BluetoothManager::class.java))?.adapter
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var gatt: BluetoothGatt? = null
+    private var notifyChar: BluetoothGattCharacteristic? = null
+    private var writeChar: BluetoothGattCharacteristic? = null
+    private var listener: ((BleConnEvent) -> Unit)? = null
+    private var connectedItem: BleDeviceItem? = null
+
+    private val serviceUuids = listOf(
+        UUID.fromString("0000FFE0-0000-1000-8000-00805F9B34FB"),
+        UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E"),
+        UUID.fromString("0000FFF0-0000-1000-8000-00805F9B34FB")
+    )
+    private val notifyUuids = listOf(
+        UUID.fromString("0000FFE1-0000-1000-8000-00805F9B34FB"),
+        UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"),
+        UUID.fromString("0000FFF1-0000-1000-8000-00805F9B34FB")
+    )
+    private val writeUuids = listOf(
+        UUID.fromString("0000FFE1-0000-1000-8000-00805F9B34FB"),
+        UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"),
+        UUID.fromString("0000FFF2-0000-1000-8000-00805F9B34FB")
+    )
+
+    fun setEventListener(l: ((BleConnEvent) -> Unit)?) { listener = l }
+    private fun emit(e: BleConnEvent) { mainHandler.post { listener?.invoke(e) } }
+
+    @SuppressLint("MissingPermission")
+    fun connect(item: BleDeviceItem) {
+        disconnect()
+        connectedItem = item
+        val device = item.device ?: run { emit(BleConnEvent.Disconnected("设备实例为空")); return }
+        gatt = if (Build.VERSION.SDK_INT >= 23) device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        else device.connectGatt(context, false, gattCallback)
+        if (gatt == null) emit(BleConnEvent.Disconnected("连接失败"))
+    }
+
+    @SuppressLint("MissingPermission")
+    fun disconnect() {
+        notifyChar = null; writeChar = null; connectedItem = null
+        try { gatt?.disconnect(); gatt?.close() } catch (_: Exception) {}
+        gatt = null
+    }
+
+    @SuppressLint("MissingPermission")
+    fun send(bytes: ByteArray): Boolean {
+        val c = writeChar ?: return false
+        c.value = bytes
+        c.writeType = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        return if (gatt?.writeCharacteristic(c) == true) { emit(BleConnEvent.Sent(bytes)); true } else false
+    }
+
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    gatt.discoverServices()
+                }
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    notifyChar = null; writeChar = null
+                    try { gatt.close() } catch (_: Exception) {}
+                    if (this@BleConnector.gatt == gatt) this@BleConnector.gatt = null
+                    emit(BleConnEvent.Disconnected(if (status != 0) "连接断开（错误码 $status）" else "设备已断开连接"))
+                }
+            }
+        }
+
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                emit(BleConnEvent.Disconnected("服务发现失败"))
+                return
+            }
+            val services = gatt.services.orEmpty()
+            notifyChar = findNotifyChar(services)
+            writeChar = findWriteChar(services) ?: notifyChar
+            if (notifyChar == null) {
+                emit(BleConnEvent.Disconnected("未找到通知特征"))
+                return
+            }
+            enableNotification(gatt, notifyChar!!)
+            // 通知上层已连接
+            connectedItem?.let { item ->
+                mainHandler.post { listener?.invoke(BleConnEvent.Connected(item)) }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            emit(BleConnEvent.Received(value))
+        }
+
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            emit(BleConnEvent.Received(characteristic.value ?: byteArrayOf()))
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun enableNotification(gatt: BluetoothGatt, c: BluetoothGattCharacteristic) {
+        gatt.setCharacteristicNotification(c, true)
+        c.getDescriptor(CCCD_UUID)?.let {
+            it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            try { gatt.writeDescriptor(it) } catch (_: Exception) {}
+        }
+    }
+
+    private fun findNotifyChar(services: List<BluetoothGattService>): BluetoothGattCharacteristic? {
+        serviceUuids.forEach { suid ->
+            services.firstOrNull { it.uuid == suid }?.let { svc ->
+                notifyUuids.forEach { cuid -> svc.getCharacteristic(cuid)?.let { return it } }
+            }
+        }
+        services.forEach { svc -> svc.characteristics.firstOrNull {
+            it.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
+        }?.let { return it } }
+        return null
+    }
+
+    private fun findWriteChar(services: List<BluetoothGattService>): BluetoothGattCharacteristic? {
+        serviceUuids.forEach { suid ->
+            services.firstOrNull { it.uuid == suid }?.let { svc ->
+                writeUuids.forEach { cuid -> svc.getCharacteristic(cuid)?.let { return it } }
+            }
+        }
+        services.forEach { svc -> svc.characteristics.firstOrNull {
+            it.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+        }?.let { return it } }
+        return null
+    }
 }
 
 // ─── BLE 扫描 ───────────────────────────────────────────────────────
