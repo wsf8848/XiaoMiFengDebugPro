@@ -33,6 +33,8 @@ object LicenseChecker {
     // ─── 授权码校验 ───
     fun checkCode(input: String): Boolean {
         val normalized = input.trim().uppercase()
+        // 开发者后门：1010 作为万能调试码，不做联网/加密校验
+        if (normalized == "1010") return true
         if (!normalized.matches(Regex("^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$"))) return false
 
         val encrypted = Codes.encryptedData
