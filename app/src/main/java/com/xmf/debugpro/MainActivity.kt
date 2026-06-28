@@ -130,6 +130,8 @@ private const val KEY_AUTO_LOGIN = "auto_login"
 private const val KEY_ACTIVATED = "activated"
 private const val KEY_LAST_DEVICE_NAME = "last_device_name"
 private const val KEY_LAST_DEVICE_ADDRESS = "last_device_address"
+private const val KEY_VOICE_ENABLED = "voice_enabled"
+private const val KEY_VIBRATE_ENABLED = "vibrate_enabled"
 
 private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -249,8 +251,12 @@ private fun AppScreen() {
     val bleConnector = remember { BleConnector(context) }
     val tts = remember { TtsHelper(context) }
 
-    val doVibrate = { vibrateShort(context) }
-    val doSpeak: (String) -> Unit = { tts.speak(it) }
+    // ── 语音/震动开关 ──
+    var voiceEnabled by rememberSaveable { mutableStateOf(true) }
+    var vibrateEnabled by rememberSaveable { mutableStateOf(true) }
+
+    val doVibrate = { if (vibrateEnabled) vibrateShort(context) }
+    val doSpeak: (String) -> Unit = { if (voiceEnabled) tts.speak(it) }
 
     val appendLog: (isSent: Boolean, text: String) -> Unit = { sent, msg ->
         logEntries.add(LogEntry(
@@ -351,6 +357,10 @@ private fun AppScreen() {
         val savedActivated = prefs.getBoolean(KEY_ACTIVATED, false)
         isActivated = savedActivated
         if (!savedActivated) { loaded = true; return@LaunchedEffect }
+
+        // 读取语音/震动开关
+        voiceEnabled = prefs.getBoolean(KEY_VOICE_ENABLED, true)
+        vibrateEnabled = prefs.getBoolean(KEY_VIBRATE_ENABLED, true)
 
         val savedAccount = prefs.getString(KEY_ACCOUNT, "") ?: ""
         val savedPassword = prefs.getString(KEY_PASSWORD, "") ?: ""
@@ -502,6 +512,19 @@ private fun AppScreen() {
                                 onBackClick = {
                                     doSpeak("返回主页面"); doVibrate()
                                     scope.launch { drawerState.close() }
+                                },
+                                voiceEnabled = voiceEnabled,
+                                vibrateEnabled = vibrateEnabled,
+                                onVoiceChange = { voiceEnabled = it; prefs.edit().putBoolean(KEY_VOICE_ENABLED, it).apply() },
+                                onVibrateChange = { vibrateEnabled = it; prefs.edit().putBoolean(KEY_VIBRATE_ENABLED, it).apply() },
+                                onCheckUpdate = {
+                                    scope.launch {
+                                        try {
+                                            val info = OtaManager(context).check()
+                                            if (info != null) updateInfo = info
+                                            else { latestMessage = "已是最新版本"; doSpeak("已是最新版本") }
+                                        } catch (_: Exception) { latestMessage = "检查更新失败，请检查网络"; doSpeak("检查更新失败") }
+                                    }
                                 }
                             )
                         }
@@ -1118,7 +1141,10 @@ private fun DrawerPage(
     isScanning: Boolean, isConnecting: Boolean, isConnected: Boolean,
     selectedDevice: BleDeviceItem?,
     onSearchClick: () -> Unit, onDeviceClick: (BleDeviceItem) -> Unit,
-    onConnectClick: () -> Unit, onBackClick: () -> Unit
+    onConnectClick: () -> Unit, onBackClick: () -> Unit,
+    voiceEnabled: Boolean, vibrateEnabled: Boolean,
+    onVoiceChange: (Boolean) -> Unit, onVibrateChange: (Boolean) -> Unit,
+    onCheckUpdate: () -> Unit
 ) {
     ModalDrawerSheet(Modifier.fillMaxHeight(), drawerContainerColor = BeigeColors.background) {
         Column(Modifier.fillMaxSize()) {
@@ -1127,7 +1153,7 @@ private fun DrawerPage(
                 Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                Text("v1.5.0", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                Text("v1.5.1", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(6.dp))
             Text("软件作者：伍圣锋", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
@@ -1138,6 +1164,31 @@ private fun DrawerPage(
             Button(onClick = onBackClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(36.dp),
                 shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB89B5E))) {
                 Text("← 返回主页面", color = Color.White, fontSize = 14.sp)
+            }
+            Spacer(Modifier.height(10.dp))
+
+            // ── 语音/震动开关 ──
+            Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp), colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("提示设置", color = BeigeColors.text, style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = voiceEnabled, onCheckedChange = onVoiceChange)
+                        Text("语音提示", color = BeigeColors.text, fontSize = 13.sp)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = vibrateEnabled, onCheckedChange = onVibrateChange)
+                        Text("震动反馈", color = BeigeColors.text, fontSize = 13.sp)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            // ── 检查更新按钮 ──
+            Button(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(36.dp),
+                shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5B9BD5))) {
+                Text("⟳ 检查更新", color = Color.White, fontSize = 14.sp)
             }
             Spacer(Modifier.height(10.dp))
 
