@@ -1,8 +1,8 @@
 {
-  "version": "1.6.3",
-  "versionCode": 26,
-  "url": "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.6.3.apk",
-  "notes": "加速：jsDelivr CDN检查版本 + ghproxy代理下载 + 实时进度条",
+  "version": "1.6.4",
+  "versionCode": 27,
+  "url": "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.6.4.apk",
+  "notes": "新增：1010作为开发者调试后门授权码，无需联网验证",
   "date": "2026-06-28",
   "apkSize": 0
 }
