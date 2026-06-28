@@ -132,8 +132,33 @@ private const val KEY_LAST_DEVICE_NAME = "last_device_name"
 private const val KEY_LAST_DEVICE_ADDRESS = "last_device_address"
 private const val KEY_VOICE_ENABLED = "voice_enabled"
 private const val KEY_VIBRATE_ENABLED = "vibrate_enabled"
+private const val KEY_HISTORY_COUNT = "history_count"
+private const val KEY_HISTORY_PREFIX = "history_"
 
 private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+// ── 连接历史工具函数 ──
+private const val MAX_HISTORY = 8
+private fun loadHistory(prefs: SharedPreferences): List<Pair<String,String>> {
+    val count = prefs.getInt(KEY_HISTORY_COUNT, 0)
+    val list = mutableListOf<Pair<String,String>>()
+    for (i in 0 until count.coerceAtMost(MAX_HISTORY)) {
+        val v = prefs.getString("$KEY_HISTORY_PREFIX$i", "") ?: ""
+        val parts = v.split("|", limit = 2)
+        if (parts.size == 2) list.add(Pair(parts[0], parts[1]))
+    }
+    return list
+}
+private fun saveDeviceToHistory(prefs: SharedPreferences, name: String, addr: String) {
+    val old = loadHistory(prefs).toMutableList()
+    old.removeAll { it.second == addr } // 去重
+    old.add(0, Pair(name, addr))        // 最新放最前
+    val keep = old.take(MAX_HISTORY)
+    prefs.edit().putInt(KEY_HISTORY_COUNT, keep.size).apply()
+    keep.forEachIndexed { i, p ->
+        prefs.edit().putString("$KEY_HISTORY_PREFIX$i", "${p.first}|${p.second}").apply()
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -258,6 +283,9 @@ private fun AppScreen() {
     val doVibrate = { if (vibrateEnabled) vibrateShort(context) }
     val doSpeak: (String) -> Unit = { if (voiceEnabled) tts.speak(it) }
 
+    // ── 连接历史（最多 8 条） ──
+    var connectHistory by remember { mutableStateOf<List<Pair<String,String>>>(loadHistory(prefs)) }
+
     val appendLog: (isSent: Boolean, text: String) -> Unit = { sent, msg ->
         logEntries.add(LogEntry(
             timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()),
@@ -302,6 +330,7 @@ private fun AppScreen() {
                     latestMessage = "连接成功：${event.item.name}"
                     doSpeak("连接成功${event.item.name}"); doVibrate()
                     prefs.edit().putString(KEY_LAST_DEVICE_NAME, event.item.name).putString(KEY_LAST_DEVICE_ADDRESS, event.item.address).apply()
+                    saveDeviceToHistory(prefs, event.item.name, event.item.address); connectHistory = loadHistory(prefs)
                     scope.launch { drawerState.close() }
                 }
                 is BleConnEvent.Disconnected -> {
@@ -528,6 +557,24 @@ private fun AppScreen() {
                                             }
                                         } catch (_: Exception) {
                                             noUpdateMsg = "检查更新失败，请检查网络连接"
+                                        }
+                                    }
+                                },
+                                connectHistory = connectHistory,
+                                onHistoryClick = { name, addr ->
+                                    // 构造一个历史 BleDeviceItem，通过常规连接流程处理
+                                    scope.launch {
+                                        try {
+                                            val btAdapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                                            val dev = btAdapter?.getRemoteDevice(addr)
+                                            if (dev != null) {
+                                                pendingDevice = BleDeviceItem(name, addr, 0, dev); pairInput = ""; showPairDialog = true
+                                                scope.launch { drawerState.close() }
+                                            } else {
+                                                latestMessage = "设备不在范围内，请搜索后连接"; doSpeak("设备不在范围内")
+                                            }
+                                        } catch (_: Exception) {
+                                            latestMessage = "连接失败，请搜索后重试"; doSpeak("连接失败")
                                         }
                                     }
                                 }
@@ -1161,122 +1208,147 @@ private fun DrawerPage(
     onConnectClick: () -> Unit, onBackClick: () -> Unit,
     voiceEnabled: Boolean, vibrateEnabled: Boolean,
     onVoiceChange: (Boolean) -> Unit, onVibrateChange: (Boolean) -> Unit,
-    onCheckUpdate: () -> Unit
+    onCheckUpdate: () -> Unit,
+    connectHistory: List<Pair<String,String>>,
+    onHistoryClick: (String, String) -> Unit
 ) {
     ModalDrawerSheet(Modifier.fillMaxHeight(), drawerContainerColor = BeigeColors.background) {
         Column(Modifier.fillMaxSize()) {
-            // 顶部横幅
-            Column(Modifier.fillMaxWidth().background(BeigeColors.topBar).padding(vertical = 24.dp, horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
+                // 顶部横幅
+                Column(Modifier.fillMaxWidth().background(BeigeColors.topBar).padding(vertical = 24.dp, horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                    Text("v1.6.1", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                }
                 Spacer(Modifier.height(4.dp))
-                Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                Text("v1.5.1", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(6.dp))
-            Text("软件作者：伍圣锋", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
-            Text("问题反馈：554805466@qq.com", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
-            Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("软件作者：伍圣锋", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                    Text("反馈：554805466@qq.com", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                }
+                Spacer(Modifier.height(10.dp))
 
-            // 「返回主页面」
-            Button(onClick = onBackClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(36.dp),
-                shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB89B5E))) {
-                Text("← 返回主页面", color = Color.White, fontSize = 14.sp)
-            }
-            Spacer(Modifier.height(10.dp))
+                // ── 快速操作行 ──
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onBackClick, modifier = Modifier.weight(1f).height(36.dp),
+                        shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB89B5E))) {
+                        Text("← 返回", color = Color.White, fontSize = 14.sp)
+                    }
+                    Button(onClick = onCheckUpdate, modifier = Modifier.weight(1f).height(36.dp),
+                        shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5B9BD5))) {
+                        Text("⟳ 检查更新", color = Color.White, fontSize = 14.sp)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
 
-            // ── 语音/震动开关 ──
-            Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp), colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("提示设置", color = BeigeColors.text, style = MaterialTheme.typography.labelLarge)
+                // ── 提示设置 + 连接状态 双列 ──
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 提示设置
+                    Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text("提示设置", color = BeigeColors.text, style = MaterialTheme.typography.labelLarge)
+                            Spacer(Modifier.height(4.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = voiceEnabled, onCheckedChange = onVoiceChange, modifier = Modifier.size(20.dp))
+                                Text("语音", color = BeigeColors.text, fontSize = 12.sp)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = vibrateEnabled, onCheckedChange = onVibrateChange, modifier = Modifier.size(20.dp))
+                                Text("震动", color = BeigeColors.text, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    // 连接状态
+                    Card(Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)) {
+                        Column(Modifier.padding(10.dp)) {
+                            Text("连接状态", color = BeigeColors.text, style = MaterialTheme.typography.labelLarge)
+                            Spacer(Modifier.height(6.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("●", color = if (isConnected) Color(0xFF2E7D32) else BeigeColors.offline, fontSize = 12.sp)
+                                Spacer(Modifier.width(6.dp))
+                                Text(connectedName, color = if (isConnected) Color(0xFF2E7D32) else Color(0xFFC62828),
+                                    fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            }
+                            Text(connectedAddress, color = BeigeColors.hint, fontSize = 11.sp)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+
+                // ── 连接历史 ──
+                if (connectHistory.isNotEmpty()) {
+                    Text("连接历史", color = BeigeColors.text, style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 14.dp))
                     Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = voiceEnabled, onCheckedChange = onVoiceChange)
-                        Text("语音提示", color = BeigeColors.text, fontSize = 13.sp)
+                    connectHistory.forEach { (name, addr) ->
+                        Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp)
+                            .clickable { onHistoryClick(name, addr) },
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(10.dp)) {
+                            Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Text("↻", color = BeigeColors.primary, fontSize = 14.sp)
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(name, color = BeigeColors.text, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    Text(addr, color = BeigeColors.hint, fontSize = 10.sp)
+                                }
+                            }
+                        }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = vibrateEnabled, onCheckedChange = onVibrateChange)
-                        Text("震动反馈", color = BeigeColors.text, fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                }
+
+                // ── 搜索/连接按钮 ──
+                Button(onClick = onSearchClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(40.dp),
+                    shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = BeigeColors.primary)) {
+                    Text(if (isScanning) "■ 停止搜索" else "⌁  搜索蓝牙设备", color = Color.White, fontSize = 15.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+
+                Button(
+                    onClick = onConnectClick,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(40.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    enabled = !isScanning && (isConnected || selectedDevice != null),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isConnected) Color(0xFFC62828) else Color(0xFF2E7D32),
+                        disabledContainerColor = Color(0xFFCCCCCC)
+                    )
+                ) {
+                    Text(
+                        when {
+                            isConnecting -> "连接中..."
+                            isConnected -> "断开设备"
+                            selectedDevice != null -> "连接：${selectedDevice!!.name}"
+                            else -> "请先点击设备"
+                        },
+                        color = Color.White, fontSize = 15.sp
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+
+                // 设备列表标题
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("附近设备", color = BeigeColors.text, style = MaterialTheme.typography.bodyMedium)
+                    Text("${devices.size} 台", color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.height(6.dp)); HorizontalDivider(color = BeigeColors.border)
+
+                // 设备列表
+                if (devices.isEmpty()) {
+                    Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text(if (isScanning) "正在搜索..." else if (isConnected) "设备已连接" else "未发现设备",
+                            color = BeigeColors.hint, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
                     }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-
-            // ── 检查更新按钮 ──
-            Button(onClick = onCheckUpdate, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(36.dp),
-                shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5B9BD5))) {
-                Text("⟳ 检查更新", color = Color.White, fontSize = 14.sp)
-            }
-            Spacer(Modifier.height(10.dp))
-
-            // 连接状态
-            Card(Modifier.fillMaxWidth().padding(horizontal = 14.dp), colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(14.dp), elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("连接状态", color = BeigeColors.text, style = MaterialTheme.typography.labelLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("●", color = if (isConnected) Color(0xFF2E7D32) else BeigeColors.offline, fontSize = 12.sp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(connectedName, color = if (isConnected) Color(0xFF2E7D32) else Color(0xFFC62828), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    }
-                    Spacer(Modifier.height(6.dp)); Text(connectedAddress, color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-
-            // 按钮1: 搜索 / 停止搜索（一次点击一次切换）
-            Button(onClick = onSearchClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(44.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = BeigeColors.primary)) {
-                Text(if (isScanning) "■ 停止搜索" else "⌁  搜索蓝牙设备", color = Color.White, fontSize = 16.sp)
-            }
-            Spacer(Modifier.height(10.dp))
-
-            // 按钮2: 连接 / 断开（一次点击一次切换）
-            Button(
-                onClick = onConnectClick,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(44.dp),
-                shape = RoundedCornerShape(14.dp),
-                enabled = !isScanning && (isConnected || selectedDevice != null),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isConnected) Color(0xFFC62828) else Color(0xFF2E7D32),
-                    disabledContainerColor = Color(0xFFCCCCCC)
-                )
-            ) {
-                Text(
-                    when {
-                        isConnecting -> "连接中..."
-                        isConnected -> "断开设备"
-                        selectedDevice != null -> "连接：${selectedDevice!!.name}"
-                        else -> "请先点击设备"
-                    },
-                    color = Color.White, fontSize = 16.sp
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-
-            // 设备列表标题
-            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("附近设备", color = BeigeColors.text, style = MaterialTheme.typography.bodyMedium)
-                Text("${devices.size} 台", color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(6.dp)); HorizontalDivider(color = BeigeColors.border)
-
-            // 设备列表（可选中高亮）
-            if (devices.isEmpty()) {
-                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.TopCenter) {
-                    Text(if (isScanning) "正在搜索..." else if (isConnected) "设备已连接" else "未发现设备",
-                        color = BeigeColors.hint, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
-                }
-            } else {
-                LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(devices) { item ->
+                } else {
+                    devices.forEach { item ->
                         val isSelected = selectedDevice?.address == item.address
                         Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp)
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 3.dp)
                                 .clickable { onDeviceClick(item) }
                                 .then(if (isSelected) Modifier.border(2.dp, BeigeColors.primary, RoundedCornerShape(12.dp)) else Modifier),
                             colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFFFFF3D6) else Color.White),
@@ -1293,6 +1365,7 @@ private fun DrawerPage(
                         }
                     }
                 }
+                Spacer(Modifier.height(20.dp))
             }
         }
     }
