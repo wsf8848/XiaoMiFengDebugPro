@@ -28,9 +28,9 @@ import java.net.URL
 class OtaManager(private val context: Context) {
 
     companion object {
-        // ⚠️ 改成你的 GitHub 仓库 raw 地址
+        // GitHub raw 地址 — 已配置完成
         private const val OTA_VERSION_URL =
-            "https://raw.githubusercontent.com/WuShengFeng/XiaoMiFengDebugPro/main/dist/version.json"
+            "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/main/dist/version.json"
 
         private const val TAG = "OtaManager"
     }

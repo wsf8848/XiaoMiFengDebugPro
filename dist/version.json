@@ -1,0 +1,8 @@
+{
+  "version": "1.5.0",
+  "versionCode": 21,
+  "url": "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/main/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.5.0.apk",
+  "notes": "新增：远程OTA升级功能，支持自动检测新版本并下载安装",
+  "date": "2026-06-28",
+  "apkSize": 0
+}
