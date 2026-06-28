@@ -60,6 +60,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -297,6 +298,8 @@ private fun AppScreen() {
     var updateInfo by remember { mutableStateOf<OtaManager.VersionInfo?>(null) }
     var updateChecked by remember { mutableStateOf(false) }
     var isDownloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0) }
+    var downloadFailed by remember { mutableStateOf(false) }
     var noUpdateMsg by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
@@ -663,13 +666,52 @@ private fun AppScreen() {
                             },
                             confirmButton = {
                                 Button(onClick = {
-                                    isDownloading = true; updateInfo = null
-                                    OtaManager(context).downloadAndInstall(info)
+                                    isDownloading = true; downloadProgress = 0; updateInfo = null
+                                    OtaManager(context).downloadAndInstall(info,
+                                        onProgress = { pct -> downloadProgress = pct },
+                                        onFinish = { ok ->
+                                            isDownloading = false
+                                            if (!ok) downloadFailed = true
+                                        }
+                                    )
                                 }) { Text("立即更新") }
                             },
                             dismissButton = {
                                 Button(onClick = { updateInfo = null }) { Text("稍后再说") }
                             }
+                        )
+                    }
+
+                    // ── 下载进度对话框 ──
+                    if (isDownloading) {
+                        AlertDialog(
+                            onDismissRequest = {},
+                            title = { Text("正在更新", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                    Text("正在下载新版本...", style = MaterialTheme.typography.bodyMedium)
+                                    Spacer(Modifier.height(16.dp))
+                                    LinearProgressIndicator(
+                                        progress = { downloadProgress / 100f },
+                                        modifier = Modifier.fillMaxWidth().height(8.dp),
+                                        color = BeigeColors.primary,
+                                        trackColor = Color(0xFFE0E0E0)
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("$downloadProgress%", color = BeigeColors.primary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                }
+                            },
+                            confirmButton = {}
+                        )
+                    }
+
+                    // ── 下载失败对话框 ──
+                    if (downloadFailed) {
+                        AlertDialog(
+                            onDismissRequest = { downloadFailed = false },
+                            title = { Text("下载失败", fontWeight = FontWeight.Bold) },
+                            text = { Text("更新下载失败，请检查网络后重试。\n你也可以前往侧滑栏→检查更新 手动操作。", style = MaterialTheme.typography.bodyMedium) },
+                            confirmButton = { Button(onClick = { downloadFailed = false }) { Text("知道了") } }
                         )
                     }
 

@@ -3,6 +3,7 @@ package com.xmf.debugpro
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -17,46 +18,46 @@ import java.net.URL
 /**
  * OTA 更新管理器
  *
- * 工作流程：
- * 1. 启动时检查远程 version.json（GitHub raw）
- * 2. 比较版本号，如有新版本弹出更新对话框
- * 3. 下载 APK → 自动弹出安装
- *
- * 使用方式（在 MainActivity 启动处调用）：
- *   OtaManager(applicationContext).checkUpdate(onUpdateAvailable = { info -> ... })
+ * 加速方案：
+ *  - 检查版本用 jsDelivr CDN（国内速度快）
+ *  - 下载 APK 用 ghproxy.com 代理（GitHub raw 在国内慢）
+ *  - 下载时通过 onProgress 回调实时更新进度
  */
 class OtaManager(private val context: Context) {
 
     companion object {
-        // GitHub raw 地址 — 已配置完成
+        // jsDelivr CDN — 国内访问快，用于检查版本
         private const val OTA_VERSION_URL =
+            "https://cdn.jsdelivr.net/gh/wsf8848/XiaoMiFengDebugPro@master/dist/version.json"
+        // GitHub raw 兜底（jsDelivr 失效时）
+        private const val OTA_VERSION_URL_FALLBACK =
             "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/master/dist/version.json"
+        // ghproxy.com 代理 — 下载 APK 加速
+        private const val GH_PROXY = "https://ghproxy.com/"
 
         private const val TAG = "OtaManager"
     }
 
     data class VersionInfo(
-        val version: String,      // 新版本号 如 "1.5.0"
-        val versionCode: Int,     // 新 versionCode
-        val url: String,          // APK 下载地址
-        val notes: String,        // 更新说明
-        val apkSize: Long = 0     // APK 文件大小（字节）
+        val version: String,
+        val versionCode: Int,
+        val url: String,
+        val notes: String,
+        val apkSize: Long = 0
     )
 
-    /**
-     * 检查更新（异步，从网络获取）
-     * @param onResult 检查完成回调 (有新版本→VersionInfo, 无更新→null)
-     */
+    /** 检查更新（先试 CDN，失败后降级到 GitHub raw） */
     suspend fun check(): VersionInfo? = withContext(Dispatchers.IO) {
         try {
             val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
-            val remoteInfo = fetchVersionJson() ?: return@withContext null
+            val remoteInfo = try {
+                fetchVersionJson(OTA_VERSION_URL) ?: fetchVersionJson(OTA_VERSION_URL_FALLBACK)
+            } catch (_: Exception) {
+                fetchVersionJson(OTA_VERSION_URL_FALLBACK)
+            } ?: return@withContext null
 
-            Log.d(TAG, "当前版本: $currentVersion, 远程版本: ${remoteInfo.version}")
-
-            if (compareVersions(remoteInfo.version, currentVersion) > 0) {
-                return@withContext remoteInfo
-            }
+            Log.d(TAG, "当前: $currentVersion, 远程: ${remoteInfo.version}")
+            if (compareVersions(remoteInfo.version, currentVersion) > 0) return@withContext remoteInfo
             null
         } catch (e: Exception) {
             Log.w(TAG, "检查更新失败", e)
@@ -65,14 +66,17 @@ class OtaManager(private val context: Context) {
     }
 
     /**
-     * 下载 APK 并触发安装
-     * 使用 Android 系统的 DownloadManager 下载
+     * 下载 APK（走代理加速），通过 onProgress 回调进度
+     * @param onProgress 0~100 的百分比进度
+     * @param onFinish 下载完成回调（成功 true / 失败 false）
      */
-    fun downloadAndInstall(info: VersionInfo) {
+    fun downloadAndInstall(info: VersionInfo, onProgress: (Int) -> Unit = {}, onFinish: (Boolean) -> Unit = {}) {
         try {
+            // 下载 URL 走 ghproxy 代理加速
+            val downloadUrl = "$GH_PROXY${info.url}"
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
-            val request = DownloadManager.Request(Uri.parse(info.url))
+            val request = DownloadManager.Request(Uri.parse(downloadUrl))
                 .setTitle("小蜜蜂调试助手Pro 更新")
                 .setDescription("正在下载 v${info.version} ...")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
@@ -81,43 +85,67 @@ class OtaManager(private val context: Context) {
                     info.url.substringAfterLast("/")
                 )
                 .setMimeType("application/vnd.android.package-archive")
+                // 允许蜂窝网络下载
+                .setAllowedOverMetered(true)
+                .setAllowedOverRoaming(true)
 
-            // 下载完成后自动打开安装
             val downloadId = downloadManager.enqueue(request)
 
-            // 监听下载完成 → 打开安装
+            // 轮询下载进度
             val query = DownloadManager.Query().setFilterById(downloadId)
             Thread {
                 var finished = false
+                var lastProgress = -1
                 while (!finished) {
-                    Thread.sleep(1000)
-                    val cursor = downloadManager.query(query)
-                    cursor.use {
-                        if (it.moveToFirst()) {
-                            val status = it.getInt(it.getColumnIndex(DownloadManager.COLUMN_STATUS))
-                            if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                                finished = true
-                                val uri = it.getString(it.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI))
-                                installApk(Uri.parse(uri))
-                            } else if (status == DownloadManager.STATUS_FAILED) {
-                                finished = true
-                                Log.e(TAG, "下载失败")
+                    Thread.sleep(500) // 500ms 轮询一次，更平滑
+                    var cursor: Cursor? = null
+                    try {
+                        cursor = downloadManager.query(query)
+                        if (cursor != null && cursor.moveToFirst()) {
+                            val status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS))
+                            when (status) {
+                                DownloadManager.STATUS_RUNNING -> {
+                                    val total = cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                                    val downloaded = cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                                    if (total > 0) {
+                                        val pct = ((downloaded * 100) / total).toInt()
+                                        if (pct != lastProgress) {
+                                            lastProgress = pct; onProgress(pct)
+                                        }
+                                    }
+                                }
+                                DownloadManager.STATUS_SUCCESSFUL -> {
+                                    finished = true; onProgress(100)
+                                    val uri = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI))
+                                    installApk(Uri.parse(uri))
+                                    onFinish(true)
+                                }
+                                DownloadManager.STATUS_FAILED -> {
+                                    finished = true; onFinish(false)
+                                    Log.e(TAG, "下载失败")
+                                }
                             }
                         }
+                    } catch (_: Exception) {
+                        finished = true; onFinish(false)
+                    } finally {
+                        cursor?.close()
                     }
                 }
             }.apply { isDaemon = true }.start()
         } catch (e: Exception) {
             Log.e(TAG, "下载失败", e)
-            // 兜底：直接打开浏览器让用户手动下载
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
+            // 兜底：浏览器下载
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {}
+            onFinish(false)
         }
     }
 
-    /** 安装 APK */
     private fun installApk(uri: Uri) {
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
@@ -129,20 +157,18 @@ class OtaManager(private val context: Context) {
         context.startActivity(intent)
     }
 
-    /** 从网络获取 version.json */
-    private fun fetchVersionJson(): VersionInfo? {
-        val url = URL(OTA_VERSION_URL)
+    /** 获取 version.json（支持 CDN 和直连） */
+    private fun fetchVersionJson(urlStr: String): VersionInfo? {
+        val url = URL(urlStr)
         val conn = url.openConnection() as HttpURLConnection
         conn.apply {
-            connectTimeout = 8000
-            readTimeout = 8000
+            connectTimeout = 10000
+            readTimeout = 10000
             requestMethod = "GET"
         }
         return try {
             val reader = BufferedReader(InputStreamReader(conn.inputStream, "utf-8"))
-            val text = reader.readText()
-            reader.close()
-
+            val text = reader.readText(); reader.close()
             val json = org.json.JSONObject(text)
             VersionInfo(
                 version = json.getString("version"),
@@ -151,18 +177,14 @@ class OtaManager(private val context: Context) {
                 notes = json.optString("notes", "有新版本可用"),
                 apkSize = json.optLong("apkSize", 0)
             )
-        } finally {
-            conn.disconnect()
-        }
+        } finally { conn.disconnect() }
     }
 
-    /** 版本号比较（"1.5.0" > "1.4.0"） */
     private fun compareVersions(v1: String, v2: String): Int {
-        val parts1 = v1.split(".").map { it.toIntOrNull() ?: 0 }
-        val parts2 = v2.split(".").map { it.toIntOrNull() ?: 0 }
-        for (i in 0 until maxOf(parts1.size, parts2.size)) {
-            val a = parts1.getOrElse(i) { 0 }
-            val b = parts2.getOrElse(i) { 0 }
+        val p1 = v1.split(".").map { it.toIntOrNull() ?: 0 }
+        val p2 = v2.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(p1.size, p2.size)) {
+            val a = p1.getOrElse(i) { 0 }; val b = p2.getOrElse(i) { 0 }
             if (a != b) return a - b
         }
         return 0
