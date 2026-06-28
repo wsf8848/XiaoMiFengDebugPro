@@ -269,6 +269,7 @@ private fun AppScreen() {
     var updateInfo by remember { mutableStateOf<OtaManager.VersionInfo?>(null) }
     var updateChecked by remember { mutableStateOf(false) }
     var isDownloading by remember { mutableStateOf(false) }
+    var noUpdateMsg by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         if (!updateChecked) {
@@ -522,8 +523,12 @@ private fun AppScreen() {
                                         try {
                                             val info = OtaManager(context).check()
                                             if (info != null) updateInfo = info
-                                            else { latestMessage = "已是最新版本"; doSpeak("已是最新版本") }
-                                        } catch (_: Exception) { latestMessage = "检查更新失败，请检查网络"; doSpeak("检查更新失败") }
+                                            else {
+                                                noUpdateMsg = "已是最新版本（v${context.packageManager.getPackageInfo(context.packageName, 0).versionName}）"
+                                            }
+                                        } catch (_: Exception) {
+                                            noUpdateMsg = "检查更新失败，请检查网络连接"
+                                        }
                                     }
                                 }
                             )
@@ -617,6 +622,18 @@ private fun AppScreen() {
                             },
                             dismissButton = {
                                 Button(onClick = { updateInfo = null }) { Text("稍后再说") }
+                            }
+                        )
+                    }
+
+                    // ── 无新版本提示对话框 ──
+                    if (noUpdateMsg.isNotEmpty()) {
+                        AlertDialog(
+                            onDismissRequest = { noUpdateMsg = "" },
+                            title = { Text("检查更新", fontWeight = FontWeight.Bold) },
+                            text = { Text(noUpdateMsg, style = MaterialTheme.typography.bodyMedium) },
+                            confirmButton = {
+                                Button(onClick = { noUpdateMsg = "" }) { Text("知道了") }
                             }
                         )
                     }
