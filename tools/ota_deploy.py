@@ -21,7 +21,7 @@ APK_PATH = "../dist/小蜜蜂调试助手Pro_v1.5.0.apk"   # APK 路径
 # GitHub 仓库信息（改成你自己的仓库）
 GITHUB_USER = "wsf8848"
 GITHUB_REPO = "XiaoMiFengDebugPro"
-GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/main"
+GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/master"
 
 # ═══ 生成 version.json ═══
 apk_filename = f"小蜜蜂调试助手Pro_v{VERSION}.apk"

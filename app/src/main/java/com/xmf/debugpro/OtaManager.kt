@@ -30,7 +30,7 @@ class OtaManager(private val context: Context) {
     companion object {
         // GitHub raw 地址 — 已配置完成
         private const val OTA_VERSION_URL =
-            "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/main/dist/version.json"
+            "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/master/dist/version.json"
 
         private const val TAG = "OtaManager"
     }
