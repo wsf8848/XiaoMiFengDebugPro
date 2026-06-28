@@ -21,3 +21,12 @@
 
 # OS
 Thumbs.db
+
+# Node.js (for docx generation)
+node_modules/
+package-lock.json
+package.json
+
+# Temp / misc
+screen_*.png
+安装调试报告.md

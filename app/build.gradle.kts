@@ -11,8 +11,8 @@ android {
         applicationId = "com.xmf.debugpro"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.1.1"
+        versionCode = 21
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -31,7 +31,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

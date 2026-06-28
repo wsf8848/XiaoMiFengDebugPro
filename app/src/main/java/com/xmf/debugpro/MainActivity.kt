@@ -31,6 +31,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -79,7 +82,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -92,6 +97,7 @@ import com.xmf.debugpro.ui.theme.XiaoMiFengTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -120,6 +126,8 @@ private const val KEY_ACCOUNT = "account"
 private const val KEY_PASSWORD = "password"
 private const val KEY_CODE = "code"
 private const val KEY_REMEMBER = "remember"
+private const val KEY_AUTO_LOGIN = "auto_login"
+private const val KEY_ACTIVATED = "activated"
 private const val KEY_LAST_DEVICE_NAME = "last_device_name"
 private const val KEY_LAST_DEVICE_ADDRESS = "last_device_address"
 
@@ -201,8 +209,7 @@ private fun AppScreen() {
     var account by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
-    var rememberPassword by rememberSaveable { mutableStateOf(false) }
-    var rememberCode by rememberSaveable { mutableStateOf(false) }
+    var isActivated by rememberSaveable { mutableStateOf(false) }
     var sendHex by rememberSaveable { mutableStateOf(true) }
     var receiveHex by rememberSaveable { mutableStateOf(false) }
     var sendInput by rememberSaveable { mutableStateOf("") }
@@ -222,6 +229,19 @@ private fun AppScreen() {
     var pairInput by rememberSaveable { mutableStateOf("") }
     var pendingDevice by remember { mutableStateOf<BleDeviceItem?>(null) }
     var selectedDevice by remember { mutableStateOf<BleDeviceItem?>(null) }
+    var selectedTab by rememberSaveable { mutableStateOf("原始数据") }
+    var autoLogin by rememberSaveable { mutableStateOf(false) }
+    var timedSendEnabled by rememberSaveable { mutableStateOf(false) }
+    var timedSendInterval by rememberSaveable { mutableStateOf(1000L) } // ms
+    var customProtocolData by rememberSaveable { mutableStateOf("--") }
+    var joyLeftWheel by rememberSaveable { mutableStateOf("--") }
+    var joyGyro by rememberSaveable { mutableStateOf("--") }
+    var joyRightWheel by rememberSaveable { mutableStateOf("--") }
+    var joyBattery by rememberSaveable { mutableStateOf("--") }
+    var joyMode by rememberSaveable { mutableStateOf("--") }
+    var joyStatus by rememberSaveable { mutableStateOf("--") }
+    // BLE 数据刷新计数器：每次收到有效数据包时递增，强制触发 UI 刷新
+    var bleDataSeq by rememberSaveable { mutableStateOf(0L) }
 
     val scanDevices = remember { mutableStateListOf<BleDeviceItem>() }
     val prefs: SharedPreferences = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
@@ -237,6 +257,21 @@ private fun AppScreen() {
             timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date()),
             direction = if (sent) "TX" else "RX", text = msg, isSent = sent
         ))
+    }
+
+    // ── OTA 更新状态 ──
+    var updateInfo by remember { mutableStateOf<OtaManager.VersionInfo?>(null) }
+    var updateChecked by remember { mutableStateOf(false) }
+    var isDownloading by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (!updateChecked) {
+            try {
+                val info = OtaManager(context).check()
+                if (info != null) updateInfo = info
+            } catch (_: Exception) { }
+            updateChecked = true
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -256,6 +291,7 @@ private fun AppScreen() {
                 is BleConnEvent.Connected -> {
                     isConnecting = false; isConnected = true
                     connectedName = event.item.name; connectedAddress = event.item.address
+                    isScanning = false; selectedDevice = null
                     latestMessage = "连接成功：${event.item.name}"
                     doSpeak("连接成功${event.item.name}"); doVibrate()
                     prefs.edit().putString(KEY_LAST_DEVICE_NAME, event.item.name).putString(KEY_LAST_DEVICE_ADDRESS, event.item.address).apply()
@@ -271,6 +307,35 @@ private fun AppScreen() {
                     val hx = event.bytes.joinToString(" ") { b -> "%02X".format(b) }
                     val u8 = try { event.bytes.toString(StandardCharsets.UTF_8).replace("\r","").replace("\n","\\n") } catch (_:Exception) { "" }
                     appendLog(false, if (receiveHex) hx else (u8.ifBlank { "<$hx>" }))
+                    // 在接收缓冲区中查找所有匹配的协议包（支持多包合并）
+                    val buf = event.bytes
+                    var i = 0
+                    var hasJoy = false; var hasCustom = false
+                    while (i < buf.size) {
+                        // 查找摇杆数据包：0x55 0x5A + 6字节数据 + 0x5B (共9字节)
+                        if (i + 8 < buf.size && buf[i] == 0x55.toByte() && buf[i+1] == 0x5A.toByte() && buf[i+8] == 0x5B.toByte()) {
+                            joyLeftWheel = (buf[i+2].toInt() and 0xFF).toString()
+                            joyGyro = (buf[i+3].toInt() and 0xFF).toString()
+                            joyRightWheel = (buf[i+4].toInt() and 0xFF).toString()
+                            joyBattery = (buf[i+5].toInt() and 0xFF).toString()
+                            joyMode = (buf[i+6].toInt() and 0xFF).toString()
+                            joyStatus = (buf[i+7].toInt() and 0xFF).toString()
+                            hasJoy = true; i += 9; continue
+                        }
+                        // 查找自定义协议包：0x2C 0x12 + N字节数据 + 0x5B (最少6字节)
+                        if (i + 5 < buf.size && buf[i] == 0x2C.toByte() && buf[i+1] == 0x12.toByte()) {
+                            // 从当前位置向后找 0x5B 包尾
+                            val tailIdx = (i+2 until buf.size).find { buf[it] == 0x5B.toByte() }
+                            if (tailIdx != null && tailIdx > i+1) {
+                                val dataBytes = buf.sliceArray(i+2 until tailIdx)
+                                customProtocolData = dataBytes.joinToString(" ") { (it.toInt() and 0xFF).toString() }
+                                hasCustom = true; i = tailIdx + 1; continue
+                            }
+                        }
+                        i++
+                    }
+                    // 强制刷新计数器，确保 Compose UI 更新
+                    if (hasJoy || hasCustom) bleDataSeq++
                 }
                 is BleConnEvent.Sent -> {
                     val hx = event.bytes.joinToString(" ") { b -> "%02X".format(b) }
@@ -281,26 +346,41 @@ private fun AppScreen() {
         }
     }
 
-    // ── 开机：欢迎 + 读取登录 + 读取上次连接设备 ──
+    // ── 开机：读取激活状态 + 欢迎 + 读取登录 + 读取上次连接设备 ──
     LaunchedEffect(Unit) {
+        val savedActivated = prefs.getBoolean(KEY_ACTIVATED, false)
+        isActivated = savedActivated
+        if (!savedActivated) { loaded = true; return@LaunchedEffect }
+
         val savedAccount = prefs.getString(KEY_ACCOUNT, "") ?: ""
         val savedPassword = prefs.getString(KEY_PASSWORD, "") ?: ""
         val savedCode = prefs.getString(KEY_CODE, "") ?: ""
-        val savedRemember = prefs.getBoolean(KEY_REMEMBER, false)
-        if (savedRemember && savedAccount == EXPECTED_ACCOUNT && savedPassword == EXPECTED_PASSWORD && savedCode == EXPECTED_CODE) {
+        val savedAutoLogin = prefs.getBoolean(KEY_AUTO_LOGIN, false)
+        autoLogin = savedAutoLogin
+        if (savedAutoLogin && savedAccount == EXPECTED_ACCOUNT && savedPassword == EXPECTED_PASSWORD && LicenseChecker.checkCode(savedCode)) {
             account = savedAccount; password = savedPassword; code = savedCode
-            rememberPassword = true; rememberCode = true
             isLoggedIn = true
             latestMessage = "自动登录成功，主页面已打开。"
-        } else if (savedRemember) {
+        } else if (savedAutoLogin) {
             account = savedAccount; password = savedPassword; code = savedCode
-            rememberPassword = savedPassword.isNotBlank(); rememberCode = savedCode.isNotBlank()
         }
-        // 读取上次连接的设备
+        // 读取上次连接的设备并真实连接
         val lastName = prefs.getString(KEY_LAST_DEVICE_NAME, "") ?: ""
         val lastAddr = prefs.getString(KEY_LAST_DEVICE_ADDRESS, "") ?: ""
-        if (lastName.isNotBlank()) {
-            connectedName = lastName; connectedAddress = lastAddr; isConnected = true
+        if (lastName.isNotBlank() && lastAddr.isNotBlank()) {
+            connectedName = lastName; connectedAddress = lastAddr
+            try {
+                val btAdapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                val remoteDev = btAdapter?.getRemoteDevice(lastAddr)
+                if (remoteDev != null) {
+                    isConnecting = true
+                    bleConnector.connect(BleDeviceItem(lastName, lastAddr, 0, remoteDev))
+                } else {
+                    isConnected = true // fallback: just show as connected
+                }
+            } catch (_: Exception) {
+                isConnected = true // fallback: just show as connected
+            }
         }
         loaded = true
     }
@@ -352,6 +432,18 @@ private fun AppScreen() {
         if (searchJustFinished) { delay(3000); searchJustFinished = false }
     }
 
+    // ── 定时发送 ──
+    LaunchedEffect(timedSendEnabled, timedSendInterval, sendInput, sendHex, isConnected) {
+        if (!timedSendEnabled || !isConnected) return@LaunchedEffect
+        while (true) {
+            delay(timedSendInterval)
+            if (!timedSendEnabled || !isConnected) break
+            val bytes = if (sendHex) (parseHexInput(sendInput) ?: continue) else sendInput.toByteArray(StandardCharsets.UTF_8)
+            if (bytes.isEmpty()) continue
+            bleConnector.send(bytes)
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose { bleManager.stopScan(); bleConnector.disconnect(); tts.destroy() }
     }
@@ -385,14 +477,26 @@ private fun AppScreen() {
                                     }
                                 },
                                 onDeviceClick = { item ->
-                                    selectedDevice = if (selectedDevice?.address == item.address) null else item
+                                    selectedDevice = item
+                                    // 在搜索中点设备 → 直接准备连接
+                                    if (isScanning) {
+                                        isScanning = false
+                                        pendingDevice = item; pairInput = ""; showPairDialog = true
+                                    }
                                 },
                                 onConnectClick = {
-                                    val dev = selectedDevice ?: return@DrawerPage
                                     if (isConnected) {
+                                        // 先更新 UI，再断开底层连接
+                                        isConnected = false; isConnecting = false
+                                        connectedName = "未连接"; connectedAddress = "--"
+                                        latestMessage = "设备已断开连接"
+                                        doSpeak("设备已断开"); doVibrate()
                                         bleConnector.disconnect()
                                     } else {
-                                        pendingDevice = dev; pairInput = ""; showPairDialog = true
+                                        val dev = selectedDevice
+                                        if (dev != null) {
+                                            pendingDevice = dev; pairInput = ""; showPairDialog = true
+                                        }
                                     }
                                 },
                                 onBackClick = {
@@ -421,6 +525,11 @@ private fun AppScreen() {
                             onSendInputChange = { sendInput = it },
                             connectedName = connectedName,
                             isConnected = isConnected,
+                            selectedTab = selectedTab,
+                            onTabChange = {
+                                selectedTab = it
+                                doSpeak(it); doVibrate()
+                            },
                             onMenuClick = { scope.launch { drawerState.open() } },
                             onSendClick = {
                                 if (!isConnected) {
@@ -443,6 +552,48 @@ private fun AppScreen() {
                             onClearLog = {
                                 logEntries.clear(); latestMessage = "接收区已清空。"
                                 doSpeak("已清空接收区"); doVibrate()
+                            },
+                            onSendBytes = { bytes -> bleConnector.send(bytes) },
+                            onSpeak = doSpeak,
+                            onVibrate = doVibrate,
+                            timedSendEnabled = timedSendEnabled,
+                            onTimedSendChange = { timedSendEnabled = it },
+                            timedSendInterval = timedSendInterval,
+                            onTimedSendIntervalChange = { timedSendInterval = it },
+                            customProtocolData = customProtocolData,
+                            joyLeftWheel = joyLeftWheel, joyGyro = joyGyro,
+                            joyRightWheel = joyRightWheel, joyBattery = joyBattery,
+                            joyMode = joyMode, joyStatus = joyStatus,
+                            bleDataSeq = bleDataSeq
+                        )
+                    }
+
+                    // ── OTA 更新对话框 ──
+                    if (updateInfo != null && !isDownloading) {
+                        val info = updateInfo!!
+                        AlertDialog(
+                            onDismissRequest = { updateInfo = null },
+                            title = { Text("发现新版本", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column {
+                                    Text("版本：${info.version}", style = MaterialTheme.typography.bodyMedium)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(info.notes, color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
+                                    Spacer(Modifier.height(8.dp))
+                                    if (info.apkSize > 0) {
+                                        Text("大小：${"%.1f".format(info.apkSize / 1048576.0)} MB",
+                                            color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(onClick = {
+                                    isDownloading = true; updateInfo = null
+                                    OtaManager(context).downloadAndInstall(info)
+                                }) { Text("立即更新") }
+                            },
+                            dismissButton = {
+                                Button(onClick = { updateInfo = null }) { Text("稍后再说") }
                             }
                         )
                     }
@@ -465,7 +616,7 @@ private fun AppScreen() {
                                 Button(onClick = {
                                     showPairDialog = false; val dev = pendingDevice ?: return@Button
                                     isConnecting = true; isScanning = false
-                                    if (pairInput.isNotBlank()) { try { dev.device?.createBond() } catch (_: Exception) {} }
+                                    // 不调用 createBond() — Android 系统会自动处理配对弹窗
                                     latestMessage = "正在连接 ${dev.name} ..."
                                     doSpeak("正在连接"); doVibrate()
                                     bleConnector.connect(dev)
@@ -478,47 +629,52 @@ private fun AppScreen() {
                 } else if (loaded) {
                     LoginPage(
                         account = account, password = password, code = code,
-                        rememberPassword = rememberPassword, rememberCode = rememberCode,
                         loginError = loginError,
                         onAccountChange = { account = it; loginError = "" },
                         onPasswordChange = { password = it; loginError = "" },
                         onCodeChange = { code = it; loginError = "" },
-                        onRememberPasswordChange = { rememberPassword = it },
-                        onRememberCodeChange = { rememberCode = it },
                         onLogin = {
+                            val codeOk = LicenseChecker.checkCode(code)
+                            val accountOk = account == EXPECTED_ACCOUNT
+                            val passwordOk = password == EXPECTED_PASSWORD
                             when {
-                                account != EXPECTED_ACCOUNT -> { loginError = "账号错误：请输入正确账号 FYX"; latestMessage = loginError }
-                                password != EXPECTED_PASSWORD -> { loginError = "密码错误：请重新输入登录密码"; latestMessage = loginError }
-                                code != EXPECTED_CODE -> { loginError = "授权码错误：请联系开发工程师"; latestMessage = loginError }
+                                !codeOk -> { loginError = "授权码错误：请联系开发工程师获取有效授权码"; latestMessage = loginError; doSpeak("授权码错误，请联系工程师") }
+                                !accountOk -> { loginError = "账号错误：请输入正确账号 FYX"; latestMessage = loginError; doSpeak("账号错误") }
+                                !passwordOk -> { loginError = "密码错误：请重新输入登录密码"; latestMessage = loginError; doSpeak("密码错误") }
                                 else -> {
+                                    if (!isActivated) { isActivated = true; prefs.edit().putBoolean(KEY_ACTIVATED, true).apply() }
                                     loginError = ""; latestMessage = "登录成功，收发数据显示区已准备就绪。"
                                     isLoggedIn = true; doSpeak("登录成功"); doVibrate()
                                     prefs.edit()
                                         .putString(KEY_ACCOUNT, account)
-                                        .putBoolean(KEY_REMEMBER, rememberPassword || rememberCode)
+                                        .putBoolean(KEY_AUTO_LOGIN, autoLogin)
                                         .also { e ->
-                                            if (rememberPassword) e.putString(KEY_PASSWORD, password)
-                                            if (rememberCode) e.putString(KEY_CODE, code)
+                                            if (autoLogin) {
+                                                e.putString(KEY_PASSWORD, password)
+                                                e.putString(KEY_CODE, code)
+                                            }
                                         }.apply()
                                 }
                             }
-                        }
+                        },
+                        autoLogin = autoLogin,
+                        onAutoLoginChange = { autoLogin = it }
                     )
-                }
             }
         }
     }
 }
+}
 
 // ─── 登录页 ─────────────────────────────────────────────────────────
-
 @Composable
 private fun LoginPage(
     account: String, password: String, code: String,
-    rememberPassword: Boolean, rememberCode: Boolean, loginError: String,
+    loginError: String,
     onAccountChange: (String) -> Unit, onPasswordChange: (String) -> Unit,
-    onCodeChange: (String) -> Unit, onRememberPasswordChange: (Boolean) -> Unit,
-    onRememberCodeChange: (Boolean) -> Unit, onLogin: () -> Unit,
+    onCodeChange: (String) -> Unit,
+    onLogin: () -> Unit,
+    autoLogin: Boolean, onAutoLoginChange: (Boolean) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().background(BeigeColors.background).padding(24.dp).verticalScroll(rememberScrollState()),
@@ -536,19 +692,16 @@ private fun LoginPage(
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(code, onCodeChange, Modifier.fillMaxWidth(), label = { Text("授权码") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
                 Spacer(modifier = Modifier.height(10.dp))
-                RowCheckBox("记住密码", rememberPassword, onRememberPasswordChange)
-                RowCheckBox("记住授权码", rememberCode, onRememberCodeChange)
-                if (loginError.isNotBlank()) { Spacer(modifier = Modifier.height(12.dp)); Text(loginError, color = Color(0xFFC62828), style = MaterialTheme.typography.bodyMedium) }
+                Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = autoLogin, onCheckedChange = onAutoLoginChange); Text("下次自动登录", color = BeigeColors.text) }
+                if (loginError.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(loginError, color = Color(0xFFC62828), style = MaterialTheme.typography.bodyMedium)
+                }
                 Spacer(modifier = Modifier.height(18.dp))
                 Button(onClick = onLogin, Modifier.fillMaxWidth()) { Text("登录") }
             }
         }
     }
-}
-
-@Composable
-private fun RowCheckBox(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked, onCheckedChange); Text(label, color = BeigeColors.text) }
 }
 
 // ─── 主页面 ─────────────────────────────────────────────────────────
@@ -560,7 +713,19 @@ private fun MainPage(
     sendHex: Boolean, onSendHexChange: (Boolean) -> Unit,
     sendInput: String, onSendInputChange: (String) -> Unit,
     connectedName: String, isConnected: Boolean,
-    onMenuClick: () -> Unit, onSendClick: () -> Unit, onClearLog: () -> Unit
+    selectedTab: String, onTabChange: (String) -> Unit,
+    onMenuClick: () -> Unit, onSendClick: () -> Unit, onClearLog: () -> Unit,
+    onSendBytes: (ByteArray) -> Boolean,
+    onSpeak: (String) -> Unit,
+    onVibrate: () -> Unit,
+    timedSendEnabled: Boolean,
+    onTimedSendChange: (Boolean) -> Unit,
+    timedSendInterval: Long,
+    onTimedSendIntervalChange: (Long) -> Unit,
+    customProtocolData: String,
+    joyLeftWheel: String, joyGyro: String, joyRightWheel: String,
+    joyBattery: String, joyMode: String, joyStatus: String,
+    bleDataSeq: Long
 ) {
     val logListState = rememberLazyListState()
     LaunchedEffect(logEntries.size) { if (logEntries.isNotEmpty()) logListState.animateScrollToItem(logEntries.lastIndex) }
@@ -577,60 +742,361 @@ private fun MainPage(
             }
         }
 
-        Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp)) {
-            // 收发日志标题
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("收发日志", style = MaterialTheme.typography.titleSmall, color = BeigeColors.text, fontWeight = FontWeight.Medium)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (receiveHex) "HEX" else "UTF-8", color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.width(6.dp))
-                    CompactSwitch(receiveHex, onReceiveHexChange)
-                    Spacer(Modifier.width(14.dp))
-                    // 清空按钮（高亮）
-                    Text("清空", color = Color.White, style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier
-                            .clickable { onClearLog() }
-                            .background(Color(0xFFC28B4C), RoundedCornerShape(4.dp))
-                            .border(1.dp, Color(0xFFA07030), RoundedCornerShape(4.dp))
-                            .padding(horizontal = 10.dp, vertical = 5.dp))
-                }
+        // ── 四个功能按钮栏（可点击切换）──
+        Row(
+            Modifier.fillMaxWidth().background(Color(0xFFF0E6CC)).padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val tabs = listOf(
+                "原始数据" to Color(0xFF3A86FF),
+                "摇杆控制" to Color(0xFF8338EC),
+                "功能按键" to Color(0xFFFF6B35),
+                "自定义协议" to Color(0xFF06D6A0)
+            )
+            tabs.forEach { (name, bg) ->
+                val isActive = selectedTab == name
+                Text(
+                    text = name,
+                    color = if (isActive) Color.White else Color(0xFF886644),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 3.dp)
+                        .clickable { onTabChange(name) }
+                        .background(if (isActive) bg else Color(0xFFE8DCC0), RoundedCornerShape(8.dp))
+                        .border(1.5.dp, if (isActive) bg else Color(0xFFCCBB99), RoundedCornerShape(8.dp))
+                        .padding(vertical = 9.dp, horizontal = 2.dp)
+                )
             }
-            Spacer(Modifier.height(8.dp))
-            // 日志框
-            Card(Modifier.fillMaxWidth().weight(1f), colors = CardDefaults.cardColors(containerColor = BeigeColors.surface), shape = RoundedCornerShape(0.dp)) {
-                Box(Modifier.fillMaxSize().border(1.dp, BeigeColors.border).padding(horizontal = 10.dp, vertical = 10.dp)) {
-                    if (logEntries.isEmpty()) {
-                        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("暂无收发数据", color = BeigeColors.hint, style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp))
-                            Spacer(Modifier.height(6.dp)); Text(latestMessage, color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
-                        }
-                    } else {
-                        LazyColumn(Modifier.fillMaxSize(), state = logListState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(logEntries) { e -> Text("[${e.timestamp}] ${e.direction}: ${e.text}",
-                                color = if (e.isSent) Color(0xFF2E7D32) else Color.Black,
-                                style = MaterialTheme.typography.bodySmall) }
-                        }
+        }
+
+        // ── 根据 Tab 切换内容 ──
+        when (selectedTab) {
+            "原始数据" -> OriginalDataPage(
+                logEntries, latestMessage, receiveHex, onReceiveHexChange,
+                sendHex, onSendHexChange, sendInput, onSendInputChange,
+                onSendClick, onClearLog, logListState,
+                timedSendEnabled, onTimedSendChange, timedSendInterval, onTimedSendIntervalChange
+            )
+            "摇杆控制" -> JoystickPage(onSendBytes, onSpeak, onVibrate, joyLeftWheel, joyGyro, joyRightWheel, joyBattery, joyMode, joyStatus, bleDataSeq)
+            "功能按键" -> FunctionButtonsPage(onSpeak, onVibrate, onSendBytes)
+            "自定义协议" -> CustomProtocolPage(customProtocolData, bleDataSeq)
+            else -> OriginalDataPage(
+                logEntries, latestMessage, receiveHex, onReceiveHexChange,
+                sendHex, onSendHexChange, sendInput, onSendInputChange,
+                onSendClick, onClearLog, logListState,
+                timedSendEnabled, onTimedSendChange, timedSendInterval, onTimedSendIntervalChange
+            )
+        }
+    }
+}
+
+// ─── 原始数据页 ─────────────────────────────────────────────────────
+
+@Composable
+private fun OriginalDataPage(
+    logEntries: List<LogEntry>, latestMessage: String,
+    receiveHex: Boolean, onReceiveHexChange: (Boolean) -> Unit,
+    sendHex: Boolean, onSendHexChange: (Boolean) -> Unit,
+    sendInput: String, onSendInputChange: (String) -> Unit,
+    onSendClick: () -> Unit, onClearLog: () -> Unit,
+    logListState: androidx.compose.foundation.lazy.LazyListState,
+    timedSendEnabled: Boolean, onTimedSendChange: (Boolean) -> Unit,
+    timedSendInterval: Long, onTimedSendIntervalChange: (Long) -> Unit
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 8.dp)) {
+        // 收发日志标题
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("收发日志", style = MaterialTheme.typography.titleSmall, color = BeigeColors.text, fontWeight = FontWeight.Medium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (receiveHex) "HEX" else "UTF-8", color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.width(6.dp))
+                CompactSwitch(receiveHex, onReceiveHexChange)
+                Spacer(Modifier.width(14.dp))
+                Text("清空", color = Color.White, style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.clickable { onClearLog() }.background(Color(0xFFC28B4C), RoundedCornerShape(4.dp)).border(1.dp, Color(0xFFA07030), RoundedCornerShape(4.dp)).padding(horizontal = 10.dp, vertical = 5.dp))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Card(Modifier.fillMaxWidth().weight(1f), colors = CardDefaults.cardColors(containerColor = BeigeColors.surface), shape = RoundedCornerShape(0.dp)) {
+            Box(Modifier.fillMaxSize().border(1.dp, BeigeColors.border).padding(horizontal = 10.dp, vertical = 10.dp)) {
+                if (logEntries.isEmpty()) {
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("暂无收发数据", color = BeigeColors.hint, style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp))
+                        Spacer(Modifier.height(6.dp)); Text(latestMessage, color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxSize(), state = logListState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(logEntries) { e -> Text("[${e.timestamp}] ${e.direction}: ${e.text}", color = if (e.isSent) Color(0xFF2E7D32) else Color.Black, style = MaterialTheme.typography.bodySmall) }
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            // 发送模式
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("发送模式", color = BeigeColors.text, style = MaterialTheme.typography.bodyMedium)
-                    Spacer(Modifier.width(8.dp)); Text(if (sendHex) "HEX" else "UTF-8", color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.width(8.dp)); CompactSwitch(sendHex, onSendHexChange)
+        }
+        Spacer(Modifier.height(8.dp))
+        // 发送模式 + 定时发送
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("发送模式", color = BeigeColors.text, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.width(8.dp)); Text(if (sendHex) "HEX" else "UTF-8", color = BeigeColors.hint, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.width(8.dp)); CompactSwitch(sendHex, onSendHexChange)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 定时间隔选择
+                val intervalOptions = listOf(10L to "10ms", 500L to "500ms", 1000L to "1s")
+                var showIntervalMenu by remember { mutableStateOf(false) }
+                Box {
+                    Text(
+                        text = when (timedSendInterval) { 10L -> "10ms"; 500L -> "500ms"; else -> "1s" },
+                        color = if (timedSendEnabled) Color(0xFFC28B4C) else BeigeColors.hint,
+                        fontSize = 11.sp,
+                        modifier = Modifier.clickable { showIntervalMenu = true }.background(if (timedSendEnabled) Color(0xFFFFF3D6) else Color.Transparent, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 4.dp)
+                    )
+                    androidx.compose.material3.DropdownMenu(expanded = showIntervalMenu, onDismissRequest = { showIntervalMenu = false }) {
+                        intervalOptions.forEach { (value, label) ->
+                            androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { onTimedSendIntervalChange(value); showIntervalMenu = false })
+                        }
+                    }
+                }
+                Spacer(Modifier.width(4.dp))
+                // 定时开关
+                androidx.compose.material3.Checkbox(
+                    checked = timedSendEnabled,
+                    onCheckedChange = { onTimedSendChange(it) },
+                    modifier = Modifier.size(28.dp),
+                    colors = androidx.compose.material3.CheckboxDefaults.colors(checkedColor = Color(0xFFC28B4C))
+                )
+                Text("定时", color = BeigeColors.text, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        // 输入发送
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(sendInput, onSendInputChange, Modifier.weight(1f).height(50.dp), placeholder = { Text(if (sendHex) "输入HEX，如 AA 55 01" else "输入文本数据", color = BeigeColors.hint, fontSize = 13.sp) }, singleLine = true, shape = RoundedCornerShape(10.dp))
+            Spacer(Modifier.width(10.dp)); Button(onClick = onSendClick, Modifier.height(50.dp).width(100.dp), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.buttonColors(containerColor = BeigeColors.primary)) { Text(if (timedSendEnabled) "▶ 定时" else "▶ 发送", color = Color.White, fontSize = 15.sp) }
+        }
+    }
+}
+
+// ─── 摇杆控制页 ────────────────────────────────────────────────────
+
+@Composable
+private fun JoystickPage(onSendBytes: (ByteArray) -> Boolean, onSpeak: (String) -> Unit, onVibrate: () -> Unit,
+    joyLeftWheel: String, joyGyro: String, joyRightWheel: String,
+    joyBattery: String, joyMode: String, joyStatus: String,
+    bleDataSeq: Long) {
+    var ox by remember { mutableStateOf(0f) }; var oy by remember { mutableStateOf(0f) }
+    var lastSector by remember { mutableStateOf(-1) }
+    val br = 140.dp; val threshold = 15f
+
+    val sectorCmds = byteArrayOf(0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58)
+    val voiceMap = mapOf(0x51 to "前进", 0x53 to "右转", 0x55 to "后退", 0x57 to "左转", 0x5A to "停车")
+
+    fun getSector(x: Float, y: Float): Int {
+        val dist = kotlin.math.sqrt(x * x + y * y)
+        if (dist < threshold) return -1
+        val angle = Math.toDegrees(kotlin.math.atan2(y.toDouble(), x.toDouble())).toFloat()
+        return (((angle + 90f) + 360f) % 360f + 22.5f).toInt() / 45 % 8
+    }
+
+    fun sendIfChanged(newSector: Int) {
+        if (newSector != lastSector) {
+            lastSector = newSector
+            val cmd = if (newSector == -1) byteArrayOf(0x5A) else byteArrayOf(sectorCmds[newSector])
+            onSendBytes(cmd)
+            voiceMap[cmd[0].toInt() and 0xFF]?.let { onSpeak(it); onVibrate() }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().background(BeigeColors.background)) {
+        // bleDataSeq 用于强制 Compose 在有数据刷新时重新渲染
+        Text(bleDataSeq.toString(), fontSize = 0.sp, color = Color.Transparent)
+        // ── 数据展示区（摇杆上方）──
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            // 标题
+            Text("实时数据", color = Color(0xFF887755), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            // 第一行：左轮速度 | 陀螺仪角度 | 右轮速度
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                Databox("左轮速度", joyLeftWheel, "rpm", Color(0xFF3A86FF))
+                Databox("陀螺仪角度", joyGyro, "deg", Color(0xFF8338EC))
+                Databox("右轮速度", joyRightWheel, "rpm", Color(0xFFFF6B35))
+            }
+            Spacer(Modifier.height(6.dp))
+            // 第二行：电量 | 模式 | 状态
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                Databox("电量", joyBattery, "%", Color(0xFF06D6A0))
+                Databox("模式", joyMode, "-", Color(0xFFF4A261))
+                Databox("状态", joyStatus, "-", Color(0xFFE63946))
+            }
+        }
+
+        // ── 摇杆 ──
+        Box(Modifier.weight(1f).fillMaxWidth().background(BeigeColors.background), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(br * 2).pointerInput(Unit) {
+                detectDragGestures(
+                    onDragEnd = { ox = 0f; oy = 0f; sendIfChanged(-1) },
+                    onDragCancel = { ox = 0f; oy = 0f; sendIfChanged(-1) }
+                ) { ch, da -> ch.consume()
+                    val max = br.toPx(); val nx = (ox + da.x).coerceIn(-max, max); val ny = (oy + da.y).coerceIn(-max, max)
+                    val d = kotlin.math.sqrt(nx * nx + ny * ny); val r = max / d
+                    if (d <= max) { ox = nx; oy = ny } else { ox = nx * r; oy = ny * r }
+                    sendIfChanged(getSector(ox, oy))
+                }
+            }) {
+                val sz = size.minDimension; val cx = sz / 2; val cy = sz / 2; val r = sz / 2 * 0.85f; val kr = sz / 2 * 0.22f
+                drawCircle(Color(0xFF4A4A4A), r, Offset(cx, cy))
+                drawCircle(Color(0xFF3A3A3A), r * 0.7f, Offset(cx, cy))
+                drawLine(Color(0xFF666666), Offset(cx - r, cy), Offset(cx + r, cy), 1.5f)
+                drawLine(Color(0xFF666666), Offset(cx, cy - r), Offset(cx, cy + r), 1.5f)
+                if (ox == 0f && oy == 0f) {
+                    drawCircle(Color(0xFFD4A843), kr, Offset(cx, cy)); drawCircle(Color(0xFFE8C46A), kr * 0.7f, Offset(cx, cy))
+                } else {
+                    drawCircle(Color(0xFFD4A843), kr, Offset(cx + ox, cy + oy)); drawCircle(Color(0xFFE8C46A), kr * 0.7f, Offset(cx + ox, cy + oy))
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            // 输入发送
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(sendInput, onSendInputChange, Modifier.weight(1f).height(50.dp),
-                    placeholder = { Text(if (sendHex) "输入HEX，如 AA 55 01" else "输入文本数据", color = BeigeColors.hint, fontSize = 13.sp) },
-                    singleLine = true, shape = RoundedCornerShape(10.dp))
-                Spacer(Modifier.width(10.dp))
-                Button(onClick = onSendClick, Modifier.height(50.dp).width(100.dp), shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = BeigeColors.primary)) { Text("▶ 发送", color = Color.White, fontSize = 15.sp) }
+        }
+    }
+}
+
+@Composable
+private fun Databox(label: String, value: String, unit: String, color: Color) {
+    Column(Modifier.width(100.dp).background(Color.White, RoundedCornerShape(10.dp)).border(0.5.dp, Color(0xFFD4C9A8), RoundedCornerShape(10.dp)).padding(vertical = 8.dp, horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, color = Color(0xFF999999), fontSize = 10.sp)
+        Spacer(Modifier.height(2.dp))
+        Text(value, color = color, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(2.dp))
+        Text(unit, color = Color(0xFFCCCCCC), fontSize = 9.sp)
+    }
+}
+
+// ─── 功能按键页 ────────────────────────────────────────────────────
+
+@Composable
+private fun FunctionButtonsPage(onSpeak: (String) -> Unit, onVibrate: () -> Unit, onSendBytes: (ByteArray) -> Boolean) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("func_buttons", Context.MODE_PRIVATE) }
+    val defaultNames = listOf("功能按键一","功能按键二","功能按键三","功能按键四","功能按键五","功能按键六","功能按键七","功能按键八","功能按键九","功能按键十","功能按键十一","功能按键十二","功能按键十三","功能按键十四","功能按键十五")
+    // 加载自定义名称
+    var customNames by remember { mutableStateOf(prefs.getString("custom_names", "")?.split("|")?.take(15)?.let { if (it.size == 15) it else null } ?: defaultNames) }
+    val colors = listOf(Color(0xFF3A86FF),Color(0xFF8338EC),Color(0xFFFF6B35),Color(0xFF06D6A0),Color(0xFFE63946),Color(0xFF457B9D),Color(0xFFF4A261),Color(0xFF2A9D8F),Color(0xFF9C89B8),Color(0xFFF77F00),Color(0xFF1D3557),Color(0xFFBF4E30),Color(0xFF4A919E),Color(0xFF6A4C93),Color(0xFFCB904A))
+
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameIdx by remember { mutableStateOf(0) }
+    var renameInput by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxSize().background(BeigeColors.background).padding(14.dp), verticalArrangement = Arrangement.SpaceEvenly) {
+        for (row in 0 until 5) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                for (col in 0 until 3) {
+                    val idx = row * 3 + col
+                    val label = customNames[idx]
+                    val displayLabel = label
+                    val cmd = byteArrayOf((0x60 + idx).toByte())
+                    Text(displayLabel, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .width(100.dp)
+                            .pointerInput(idx, label) {
+                                detectTapGestures(
+                                    onTap = { onSpeak(displayLabel); onVibrate(); onSendBytes(cmd) },
+                                    onLongPress = { renameIdx = idx; renameInput = label; showRenameDialog = true }
+                                )
+                            }
+                            .background(colors[idx], RoundedCornerShape(14.dp))
+                            .border(2.dp, colors[idx].copy(alpha = 0.6f), RoundedCornerShape(14.dp))
+                            .padding(vertical = 16.dp, horizontal = 6.dp))
+                }
+            }
+        }
+    }
+
+    // 重命名对话框
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("修改名称", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("当前：功能按键${customNames[renameIdx]}", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(renameInput, { renameInput = it }, Modifier.fillMaxWidth(), label = { Text("新名称") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val newList = customNames.toMutableList()
+                    newList[renameIdx] = renameInput.ifBlank { defaultNames[renameIdx] }
+                    customNames = newList
+                    prefs.edit().putString("custom_names", newList.joinToString("|")).apply()
+                    showRenameDialog = false
+                    onSpeak("已修改"); onVibrate()
+                }) { Text("保存") }
+            },
+            dismissButton = { Button(onClick = { showRenameDialog = false }) { Text("取消") } }
+        )
+    }
+}
+
+// ─── 自定义协议页 ─────────────────────────────────────────────────
+
+@Composable
+private fun CustomProtocolPage(protocolData: String, bleDataSeq: Long) {
+    Column(Modifier.fillMaxSize().background(BeigeColors.background).padding(16.dp)) {
+        // bleDataSeq 用于强制 Compose 在有数据刷新时重新渲染
+        Text(bleDataSeq.toString(), fontSize = 0.sp, color = Color.Transparent)
+        // 标题栏
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = BeigeColors.topBar), shape = RoundedCornerShape(12.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("自定义协议包", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Spacer(Modifier.height(6.dp))
+                Text("遵循 0x2C 0x12 双包头，0x5B 包尾协议", color = Color(0xFFFFE2B0), fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        // 协议格式说明
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp), elevation = CardDefaults.cardElevation(2.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("协议格式", fontWeight = FontWeight.Bold, color = BeigeColors.text)
+                Spacer(Modifier.height(8.dp))
+                Text("包头：0x2C 0x12", color = BeigeColors.text, fontSize = 13.sp)
+                Text("数据：3 字节（解析值）", color = BeigeColors.text, fontSize = 13.sp)
+                Text("包尾：0x5B", color = BeigeColors.text, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+                Text("示例：0x2C 0x12 0x01 0x02 0x03 0x5B", color = BeigeColors.hint, fontSize = 12.sp)
+                Text("  → 解析数据（十进制）：1 2 3", color = BeigeColors.hint, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        // 实时解析数据
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp), elevation = CardDefaults.cardElevation(2.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                Text("实时解析数据", fontWeight = FontWeight.Bold, color = BeigeColors.text)
+                Spacer(Modifier.height(12.dp))
+                if (protocolData == "--") {
+                    Text("等待接收协议数据...", color = BeigeColors.hint, fontSize = 14.sp)
+                } else {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        val parts = protocolData.split(" ").filter { it.isNotBlank() }
+                        parts.forEach { byte ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(byte, color = Color(0xFF3A86FF), fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                                Spacer(Modifier.height(4.dp))
+                                Text("字节", color = BeigeColors.hint, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (protocolData != "--") {
+                    HorizontalDivider(color = BeigeColors.border)
+                    Spacer(Modifier.height(8.dp))
+                    Text("原始协议包：0x2C 0x12 $protocolData 0x5B", color = BeigeColors.hint, fontSize = 11.sp)
+                }
             }
         }
     }
@@ -661,8 +1127,11 @@ private fun DrawerPage(
                 Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                Text("v1.1.1", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                Text("v1.5.0", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
             }
+            Spacer(Modifier.height(6.dp))
+            Text("软件作者：伍圣锋", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+            Text("问题反馈：554805466@qq.com", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
             Spacer(Modifier.height(12.dp))
 
             // 「返回主页面」
@@ -837,23 +1306,34 @@ private class BleConnector(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun send(bytes: ByteArray): Boolean {
         val g = gatt ?: return false
-        val c = writeChar ?: return false
-        val writeType = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
-            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        return if (Build.VERSION.SDK_INT >= 33) {
-            try {
-                g.writeCharacteristic(c, bytes, writeType)
-                emit(BleConnEvent.Sent(bytes))
-                true
-            } catch (_: Exception) { false }
-        } else {
+        // 收集所有可写特征
+        val writable = mutableListOf<BluetoothGattCharacteristic>()
+        g.services.orEmpty().forEach { svc ->
+            svc.characteristics.forEach { c ->
+                if (c.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                    writable.add(c)
+                }
+            }
+        }
+        // 如果没找到可写特征，尝试用 notifyChar
+        if (writable.isEmpty()) notifyChar?.let { writable.add(it) }
+        if (writable.isEmpty()) return false
+
+        for (c in writable) {
             @Suppress("DEPRECATION")
             c.value = bytes
-            c.writeType = writeType
             @Suppress("DEPRECATION")
-            if (g.writeCharacteristic(c)) { emit(BleConnEvent.Sent(bytes)); true } else false
+            c.writeType = if (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            try {
+                @Suppress("DEPRECATION")
+                if (g.writeCharacteristic(c)) {
+                    emit(BleConnEvent.Sent(bytes)); return true
+                }
+            } catch (_: Exception) { continue }
         }
+        return false
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
