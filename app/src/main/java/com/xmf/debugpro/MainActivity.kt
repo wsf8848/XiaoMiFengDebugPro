@@ -242,6 +242,7 @@ private fun AppScreen() {
     var receiveHex by rememberSaveable { mutableStateOf(false) }
     var sendInput by rememberSaveable { mutableStateOf("") }
     var loginError by rememberSaveable { mutableStateOf("") }
+
     var loaded by rememberSaveable { mutableStateOf(false) }
     var isScanning by rememberSaveable { mutableStateOf(false) }
     var isConnecting by rememberSaveable { mutableStateOf(false) }
@@ -283,6 +284,22 @@ private fun AppScreen() {
 
     val doVibrate = { if (vibrateEnabled) vibrateShort(context) }
     val doSpeak: (String) -> Unit = { if (voiceEnabled) tts.speak(it) }
+
+    // 激活成功后执行
+    val doActivate: () -> Unit = {
+        if (!isActivated) { isActivated = true; prefs.edit().putBoolean(KEY_ACTIVATED, true).apply() }
+        loginError = ""; latestMessage = "登录成功，收发数据显示区已准备就绪。"
+        isLoggedIn = true; doSpeak("登录成功"); doVibrate()
+        prefs.edit()
+            .putString(KEY_ACCOUNT, account)
+            .putBoolean(KEY_AUTO_LOGIN, autoLogin)
+            .also { e ->
+                if (autoLogin) {
+                    e.putString(KEY_PASSWORD, password)
+                    e.putString(KEY_CODE, code)
+                }
+            }.apply()
+    }
 
     // ── 连接历史（最多 8 条） ──
     var connectHistory by remember { mutableStateOf<List<Pair<String,String>>>(loadHistory(prefs)) }
@@ -400,7 +417,7 @@ private fun AppScreen() {
         val savedCode = prefs.getString(KEY_CODE, "") ?: ""
         val savedAutoLogin = prefs.getBoolean(KEY_AUTO_LOGIN, false)
         autoLogin = savedAutoLogin
-        if (savedAutoLogin && savedAccount == EXPECTED_ACCOUNT && savedPassword == EXPECTED_PASSWORD && LicenseChecker.checkCode(savedCode)) {
+        if (savedAutoLogin && savedAccount == EXPECTED_ACCOUNT && savedPassword == EXPECTED_PASSWORD) {
             account = savedAccount; password = savedPassword; code = savedCode
             isLoggedIn = true
             latestMessage = "自动登录成功，主页面已打开。"
@@ -763,26 +780,17 @@ private fun AppScreen() {
                         onPasswordChange = { password = it; loginError = "" },
                         onCodeChange = { code = it; loginError = "" },
                         onLogin = {
-                            val codeOk = LicenseChecker.checkCode(code)
-                            val accountOk = account == EXPECTED_ACCOUNT
-                            val passwordOk = password == EXPECTED_PASSWORD
-                            when {
-                                !codeOk -> { loginError = "授权码错误：请联系开发工程师获取有效授权码"; latestMessage = loginError; doSpeak("授权码错误，请联系工程师") }
-                                !accountOk -> { loginError = "账号错误：请输入正确账号 FYX"; latestMessage = loginError; doSpeak("账号错误") }
-                                !passwordOk -> { loginError = "密码错误：请重新输入登录密码"; latestMessage = loginError; doSpeak("密码错误") }
-                                else -> {
-                                    if (!isActivated) { isActivated = true; prefs.edit().putBoolean(KEY_ACTIVATED, true).apply() }
-                                    loginError = ""; latestMessage = "登录成功，收发数据显示区已准备就绪。"
-                                    isLoggedIn = true; doSpeak("登录成功"); doVibrate()
-                                    prefs.edit()
-                                        .putString(KEY_ACCOUNT, account)
-                                        .putBoolean(KEY_AUTO_LOGIN, autoLogin)
-                                        .also { e ->
-                                            if (autoLogin) {
-                                                e.putString(KEY_PASSWORD, password)
-                                                e.putString(KEY_CODE, code)
-                                            }
-                                        }.apply()
+                            scope.launch {
+                                // 后门：1010 直接过
+                                if (code.trim().uppercase() == "1010") {
+                                    doActivate(); return@launch
+                                }
+                                // 在线验证
+                                val err = LicenseChecker.activate(context, code)
+                                if (err != null) {
+                                    loginError = err; latestMessage = err; doSpeak("授权码验证失败")
+                                } else {
+                                    doActivate()
                                 }
                             }
                         },
