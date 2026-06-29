@@ -1,8 +1,8 @@
 {
-  "version": "1.7.0",
-  "versionCode": 28,
-  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.7.0.apk",
-  "notes": "加速：OTA升级切换至Gitee国内仓库，直连下载速度大幅提升",
+  "version": "1.7.1",
+  "versionCode": 29,
+  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.7.1.apk",
+  "notes": "新增：联网激活 — 200个授权码云端验证，一机一码授权",
   "date": "2026-06-29",
   "apkSize": 0
 }
