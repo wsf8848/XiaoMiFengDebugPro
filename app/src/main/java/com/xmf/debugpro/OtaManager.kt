@@ -18,22 +18,27 @@ import java.net.URL
 /**
  * OTA 更新管理器
  *
- * 加速方案：
- *  - 检查版本用 jsDelivr CDN（国内速度快）
- *  - 下载 APK 用 ghproxy.com 代理（GitHub raw 在国内慢）
+ * 加速方案（二〇二六年六月更新）：
+ *  - 检查版本用 Gitee raw（国内直连，速度极快）
+ *  - 下载 APK 走 Gitee raw（不用代理，直连下载）
+ *  - GitHub + jsDelivr 为兜底
  *  - 下载时通过 onProgress 回调实时更新进度
  */
 class OtaManager(private val context: Context) {
 
     companion object {
-        // jsDelivr CDN — 国内访问快，用于检查版本
+        // Gitee raw — 国内直连，速度最快，首选
         private const val OTA_VERSION_URL =
-            "https://cdn.jsdelivr.net/gh/wsf8848/XiaoMiFengDebugPro@master/dist/version.json"
-        // GitHub raw 兜底（jsDelivr 失效时）
+            "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/version.json"
+        // jsDelivr CDN 兜底
         private const val OTA_VERSION_URL_FALLBACK =
+            "https://cdn.jsdelivr.net/gh/wsf8848/XiaoMiFengDebugPro@master/dist/version.json"
+        // GitHub raw 最后兜底
+        private const val OTA_VERSION_URL_LAST =
             "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/master/dist/version.json"
-        // ghproxy.com 代理 — 下载 APK 加速
-        private const val GH_PROXY = "https://ghproxy.com/"
+        // Gitee raw 作为 APK 下载基础 URL
+        private const val OTA_DOWNLOAD_BASE =
+            "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/"
 
         private const val TAG = "OtaManager"
     }
@@ -46,14 +51,15 @@ class OtaManager(private val context: Context) {
         val apkSize: Long = 0
     )
 
-    /** 检查更新（先试 CDN，失败后降级到 GitHub raw） */
+    /** 检查更新（先试 Gitee，逐级降级） */
     suspend fun check(): VersionInfo? = withContext(Dispatchers.IO) {
         try {
             val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
+            // 优先 Gitee → 降级 jsDelivr → 最后 GitHub
             val remoteInfo = try {
                 fetchVersionJson(OTA_VERSION_URL) ?: fetchVersionJson(OTA_VERSION_URL_FALLBACK)
             } catch (_: Exception) {
-                fetchVersionJson(OTA_VERSION_URL_FALLBACK)
+                try { fetchVersionJson(OTA_VERSION_URL_FALLBACK) } catch (_: Exception) { fetchVersionJson(OTA_VERSION_URL_LAST) }
             } ?: return@withContext null
 
             Log.d(TAG, "当前: $currentVersion, 远程: ${remoteInfo.version}")
@@ -66,14 +72,15 @@ class OtaManager(private val context: Context) {
     }
 
     /**
-     * 下载 APK（走代理加速），通过 onProgress 回调进度
+     * 下载 APK（走 Gitee raw 直连），通过 onProgress 回调进度
      * @param onProgress 0~100 的百分比进度
      * @param onFinish 下载完成回调（成功 true / 失败 false）
      */
     fun downloadAndInstall(info: VersionInfo, onProgress: (Int) -> Unit = {}, onFinish: (Boolean) -> Unit = {}) {
         try {
-            // 下载 URL 走 ghproxy 代理加速
-            val downloadUrl = "$GH_PROXY${info.url}"
+            // 下载 URL — 走 Gitee raw 直连（国内速度最快）
+            val apkName = info.url.substringAfterLast("/")
+            val downloadUrl = "$OTA_DOWNLOAD_BASE$apkName"
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
             val request = DownloadManager.Request(Uri.parse(downloadUrl))
