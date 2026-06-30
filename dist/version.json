@@ -1,8 +1,8 @@
 {
-  "version": "1.7.1",
-  "versionCode": 29,
-  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.7.1.apk",
-  "notes": "新增：联网激活 — 200个授权码云端验证，一机一码授权",
-  "date": "2026-06-29",
+  "version": "1.7.2",
+  "versionCode": 30,
+  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.7.2.apk",
+  "notes": "优化：侧滑栏作者/联系方式颜色优化为深棕色，更柔和",
+  "date": "2026-06-30",
   "apkSize": 0
 }
