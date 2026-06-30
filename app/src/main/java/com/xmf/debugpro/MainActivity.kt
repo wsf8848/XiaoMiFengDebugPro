@@ -1270,12 +1270,12 @@ private fun DrawerPage(
                     Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                    Text("v1.7.0", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                    Text("v1.7.2", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("软件作者：伍圣锋", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
-                    Text("反馈：554805466@qq.com", color = Color(0xFFE63946), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                    Text("软件作者：伍圣锋", color = Color(0xFF5D4037), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
+                    Text("反馈：554805466@qq.com", color = Color(0xFF5D4037), style = MaterialTheme.typography.bodySmall, fontSize = 10.sp)
                 }
                 Spacer(Modifier.height(10.dp))
 
