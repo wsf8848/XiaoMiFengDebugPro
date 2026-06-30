@@ -1270,7 +1270,7 @@ private fun DrawerPage(
                     Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                    Text("v1.7.2", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                    Text("v1.7.3", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
