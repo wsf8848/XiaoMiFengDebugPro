@@ -1,16 +1,15 @@
 package com.xmf.debugpro
 
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
-import android.database.Cursor
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -18,28 +17,14 @@ import java.net.URL
 /**
  * OTA 更新管理器
  *
- * 加速方案（二〇二六年六月更新）：
- *  - 检查版本用 Gitee raw（国内直连，速度极快）
- *  - 下载 APK 走 Gitee raw（不用代理，直连下载）
- *  - GitHub + jsDelivr 为兜底
- *  - 下载时通过 onProgress 回调实时更新进度
+ * 修复：Gitee CDN 重定向处理 + 直接流式下载（替代 DownloadManager）
+ * 下载流程：HTTP 直连（自动跟随重定向）→ 写入缓存目录 → 安装
  */
 class OtaManager(private val context: Context) {
 
     companion object {
-        // Gitee raw — 国内直连，速度最快，首选
         private const val OTA_VERSION_URL =
             "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/version.json"
-        // jsDelivr CDN 兜底
-        private const val OTA_VERSION_URL_FALLBACK =
-            "https://cdn.jsdelivr.net/gh/wsf8848/XiaoMiFengDebugPro@master/dist/version.json"
-        // GitHub raw 最后兜底
-        private const val OTA_VERSION_URL_LAST =
-            "https://raw.githubusercontent.com/wsf8848/XiaoMiFengDebugPro/master/dist/version.json"
-        // Gitee raw 作为 APK 下载基础 URL
-        private const val OTA_DOWNLOAD_BASE =
-            "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/"
-
         private const val TAG = "OtaManager"
     }
 
@@ -51,106 +36,73 @@ class OtaManager(private val context: Context) {
         val apkSize: Long = 0
     )
 
-    /** 检查更新（先试 Gitee，逐级降级） */
+    /** 检查更新 */
     suspend fun check(): VersionInfo? = withContext(Dispatchers.IO) {
         try {
             val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
-            // 优先 Gitee → 降级 jsDelivr → 最后 GitHub
-            val remoteInfo = try {
-                fetchVersionJson(OTA_VERSION_URL) ?: fetchVersionJson(OTA_VERSION_URL_FALLBACK)
-            } catch (_: Exception) {
-                try { fetchVersionJson(OTA_VERSION_URL_FALLBACK) } catch (_: Exception) { fetchVersionJson(OTA_VERSION_URL_LAST) }
-            } ?: return@withContext null
-
-            Log.d(TAG, "当前: $currentVersion, 远程: ${remoteInfo.version}")
+            val remoteInfo = fetchVersionJson(OTA_VERSION_URL) ?: return@withContext null
             if (compareVersions(remoteInfo.version, currentVersion) > 0) return@withContext remoteInfo
             null
         } catch (e: Exception) {
-            Log.w(TAG, "检查更新失败", e)
-            null
+            Log.w(TAG, "检查更新失败", e); null
         }
     }
 
     /**
-     * 下载 APK（走 Gitee raw 直连），通过 onProgress 回调进度
-     * @param onProgress 0~100 的百分比进度
-     * @param onFinish 下载完成回调（成功 true / 失败 false）
+     * 下载 APK — 使用 HTTP 流式下载（自动处理 Gitee CDN 重定向）
      */
     fun downloadAndInstall(info: VersionInfo, onProgress: (Int) -> Unit = {}, onFinish: (Boolean) -> Unit = {}) {
-        try {
-            // 下载 URL — 走 Gitee raw 直连（国内速度最快）
-            val apkName = info.url.substringAfterLast("/")
-            val downloadUrl = "$OTA_DOWNLOAD_BASE$apkName"
-            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        Thread {
+            try {
+                val apkName = info.url.substringAfterLast("/")
+                val downloadUrl = "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/$apkName"
+                Log.d(TAG, "下载: $downloadUrl")
 
-            val request = DownloadManager.Request(Uri.parse(downloadUrl))
-                .setTitle("小蜜蜂调试助手Pro 更新")
-                .setDescription("正在下载 v${info.version} ...")
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS,
-                    info.url.substringAfterLast("/")
-                )
-                .setMimeType("application/vnd.android.package-archive")
-                // 允许蜂窝网络下载
-                .setAllowedOverMetered(true)
-                .setAllowedOverRoaming(true)
+                // 建立连接，自动跟随重定向
+                val url = URL(downloadUrl)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                conn.instanceFollowRedirects = true
+                conn.connect()
 
-            val downloadId = downloadManager.enqueue(request)
-
-            // 轮询下载进度
-            val query = DownloadManager.Query().setFilterById(downloadId)
-            Thread {
-                var finished = false
+                val totalSize = conn.contentLengthLong
+                val inputStream = conn.inputStream
+                val cacheFile = File(context.cacheDir, apkName)
+                val outputStream = FileOutputStream(cacheFile)
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                var totalRead = 0L
                 var lastProgress = -1
-                while (!finished) {
-                    Thread.sleep(500) // 500ms 轮询一次，更平滑
-                    var cursor: Cursor? = null
-                    try {
-                        cursor = downloadManager.query(query)
-                        if (cursor != null && cursor.moveToFirst()) {
-                            val status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS))
-                            when (status) {
-                                DownloadManager.STATUS_RUNNING -> {
-                                    val total = cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-                                    val downloaded = cursor.getLong(cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                                    if (total > 0) {
-                                        val pct = ((downloaded * 100) / total).toInt()
-                                        if (pct != lastProgress) {
-                                            lastProgress = pct; onProgress(pct)
-                                        }
-                                    }
-                                }
-                                DownloadManager.STATUS_SUCCESSFUL -> {
-                                    finished = true; onProgress(100)
-                                    val uri = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI))
-                                    installApk(Uri.parse(uri))
-                                    onFinish(true)
-                                }
-                                DownloadManager.STATUS_FAILED -> {
-                                    finished = true; onFinish(false)
-                                    Log.e(TAG, "下载失败")
-                                }
-                            }
-                        }
-                    } catch (_: Exception) {
-                        finished = true; onFinish(false)
-                    } finally {
-                        cursor?.close()
+
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalRead += bytesRead
+                    if (totalSize > 0) {
+                        val pct = ((totalRead * 100) / totalSize).toInt()
+                        if (pct != lastProgress) { lastProgress = pct; onProgress(pct) }
                     }
                 }
-            }.apply { isDaemon = true }.start()
-        } catch (e: Exception) {
-            Log.e(TAG, "下载失败", e)
-            // 兜底：浏览器下载
-            try {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.url)).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(intent)
-            } catch (_: Exception) {}
-            onFinish(false)
-        }
+
+                outputStream.close(); inputStream.close(); conn.disconnect()
+                onProgress(100)
+                Log.d(TAG, "下载完成: ${cacheFile.absolutePath}")
+
+                // 安装
+                installApk(Uri.fromFile(cacheFile))
+                onFinish(true)
+            } catch (e: Exception) {
+                Log.e(TAG, "下载失败", e)
+                // 兜底：浏览器下载
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.url)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                } catch (_: Exception) {}
+                onFinish(false)
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     private fun installApk(uri: Uri) {
@@ -164,15 +116,10 @@ class OtaManager(private val context: Context) {
         context.startActivity(intent)
     }
 
-    /** 获取 version.json（支持 CDN 和直连） */
     private fun fetchVersionJson(urlStr: String): VersionInfo? {
         val url = URL(urlStr)
         val conn = url.openConnection() as HttpURLConnection
-        conn.apply {
-            connectTimeout = 10000
-            readTimeout = 10000
-            requestMethod = "GET"
-        }
+        conn.apply { connectTimeout = 10000; readTimeout = 10000; requestMethod = "GET" }
         return try {
             val reader = BufferedReader(InputStreamReader(conn.inputStream, "utf-8"))
             val text = reader.readText(); reader.close()
