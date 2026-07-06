@@ -1,32 +1,46 @@
-# Android
+# ─── Android / Gradle ───
 *.iml
-.gradle
+.gradle/
 /local.properties
-/.idea
+/.idea/
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# App build outputs
+/app/build/
+/app/release/
+
+# ─── OS files ───
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+*.swp
+*.swo
+*~
 
-# App build
-/app/build
-/app/release
-
-# WorkBuddy
-.workbuddy/memory/
-
-# Keystore (sensitive credentials)
+# ─── Keystore (sensitive) ───
 /keystore/
 
-# OS
-Thumbs.db
+# ─── WorkBuddy memory ───
+.workbuddy/memory/
 
-# Node.js (for docx generation)
+# ─── Node.js (for docx generation) ───
 node_modules/
 package-lock.json
 package.json
 
-# Temp / misc
+# ─── Screenshots & debug ───
 screen_*.png
 安装调试报告.md
+
+# ─── STM32 test firmware (not part of Android project) ───
+小蜜蜂串口助手测试（STM32）/
+小蜜蜂串口助手测试（STM32）.rar
