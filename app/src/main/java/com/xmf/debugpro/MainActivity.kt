@@ -135,6 +135,7 @@ private const val KEY_VOICE_ENABLED = "voice_enabled"
 private const val KEY_VIBRATE_ENABLED = "vibrate_enabled"
 private const val KEY_HISTORY_COUNT = "history_count"
 private const val KEY_HISTORY_PREFIX = "history_"
+private const val DEV_ACCESS = false  // true=调试模式(1010万能码), false=发布版(关闭后门)
 
 private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -402,7 +403,7 @@ private fun AppScreen() {
         }
     }
 
-    // ── 开机：读取激活状态 + 欢迎 + 读取登录 + 读取上次连接设备 ──
+    // ── 开机：读取激活状态 + 欢迎 + 读取登录 + 静默授权校验 ──
     LaunchedEffect(Unit) {
         val savedActivated = prefs.getBoolean(KEY_ACTIVATED, false)
         isActivated = savedActivated
@@ -417,6 +418,23 @@ private fun AppScreen() {
         val savedCode = prefs.getString(KEY_CODE, "") ?: ""
         val savedAutoLogin = prefs.getBoolean(KEY_AUTO_LOGIN, false)
         autoLogin = savedAutoLogin
+
+        // ── 静默授权校验（每次启动联网验证） ──
+        try {
+            val verifyErr = LicenseChecker.verifyCurrentDevice(context, savedCode)
+            if (verifyErr != null) {
+                // 校验不通过 → 踢回登录页
+                isActivated = false
+                isLoggedIn = false
+                prefs.edit().putBoolean(KEY_ACTIVATED, false).apply()
+                latestMessage = "授权验证失败：$verifyErr"
+                loaded = true
+                return@LaunchedEffect
+            }
+        } catch (_: Exception) {
+            // 网络异常时不拦截，允许离线使用（但下次联网会重新校验）
+        }
+
         if (savedAutoLogin && savedAccount == EXPECTED_ACCOUNT && savedPassword == EXPECTED_PASSWORD) {
             account = savedAccount; password = savedPassword; code = savedCode
             isLoggedIn = true
@@ -781,8 +799,8 @@ private fun AppScreen() {
                         onCodeChange = { code = it; loginError = "" },
                         onLogin = {
                             scope.launch {
-                                // 后门：1010 直接过
-                                if (code.trim().uppercase() == "1010") {
+                                // 后门：DEV_ACCESS 为 true 时 1010 可直接通过
+                                if (DEV_ACCESS && code.trim().uppercase() == "1010") {
                                     doActivate(); return@launch
                                 }
                                 // 在线验证
@@ -1270,7 +1288,7 @@ private fun DrawerPage(
                     Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                    Text("v1.7.3", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                    Text("v1.8.0", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {

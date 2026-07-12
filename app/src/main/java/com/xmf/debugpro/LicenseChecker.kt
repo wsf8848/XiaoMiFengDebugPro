@@ -15,43 +15,36 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * 授权码校验 — 联网激活 + 一机一码
+ * 授权码校验 — 联网激活 + 一机一码（安全加固版）
  *
- * 激活流程：
- * 1. APP 从 Gitee 下载 licenses.json（AES 加密的授权码列表）
- * 2. 解密后逐行检查：CODE|设备ID|客户名
- * 3. 如果 CODE 存在且设备ID为空 → 首次激活，绑定当前设备
- *    如果 CODE 存在且设备ID匹配 → 同一设备重新激活
- *    如果 CODE 存在但设备ID不匹配 → 已分配给其他设备
- *    如果 CODE 不存在 → 无效授权码
- *
- * licenses.json 位于 Gitee 仓库 dist/ 目录
+ * 安全措施：
+ * 1. 每次启动静默联网验证授权状态
+ * 2. 设备指纹含主板+固件等多维特征
+ * 3. 1010 后门仅在 DEBUG 包中生效
+ * 4. 签名校验防二次打包
+ * 5. 密钥分段 + XOR 混淆
  */
 object LicenseChecker {
 
-    private const val TAG = "LicenseChecker"
+    private const val TAG = "LC"
     private const val LICENSES_URL =
         "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/licenses.json"
 
-    // ─── 设备指纹 ───
+    // ─── 设备指纹（多维硬件特征） ───
 
     fun getDeviceId(context: Context): String {
-        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
-        val serial = try { Build.getSerial() } catch (_: Exception) { Build.SERIAL ?: "unknown" }
-        val raw = "$androidId|$serial|${Build.MANUFACTURER}|${Build.MODEL}"
+        val androidId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "u"
+        val serial = try { Build.getSerial() } catch (_: Exception) { Build.SERIAL ?: "u" }
+        // 多维指纹：Android ID + 序列号 + 主板 + 启动器 + 固件指纹 + 厂商 + 型号
+        val raw = "$androidId|$serial|${Build.BOARD}|${Build.BOOTLOADER}|${Build.FINGERPRINT}|${Build.MANUFACTURER}|${Build.MODEL}"
         val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray())
         return digest.joinToString("") { "%02X".format(it) }.take(16)
     }
 
     // ─── 联网激活 ───
 
-    /**
-     * 从 Gitee 下载授权码列表，验证并激活
-     * @return 结果字符串：null=成功, 其他=错误信息
-     */
     suspend fun activate(context: Context, inputCode: String): String? = withContext(Dispatchers.IO) {
         val normalized = inputCode.trim().uppercase()
-        if (normalized == "1010") return@withContext null  // 后门
 
         try {
             val json = fetchLicensesJson() ?: return@withContext "无法连接授权服务器，请检查网络"
@@ -65,8 +58,8 @@ object LicenseChecker {
 
                 if (code == normalized) {
                     return@withContext when {
-                        boundDevice.isEmpty() -> null  // 未绑定 → 激活成功
-                        boundDevice == deviceId -> null  // 同设备 → 重新激活
+                        boundDevice.isEmpty() -> null
+                        boundDevice == deviceId -> null
                         else -> "授权码已被其他设备使用（客户：$buyer）"
                     }
                 }
@@ -76,6 +69,16 @@ object LicenseChecker {
             Log.w(TAG, "激活失败", e)
             return@withContext "联网验证失败：${e.localizedMessage}"
         }
+    }
+
+    /**
+     * 静默授权校验（每次启动调用）
+     * 从本地读取已保存的授权码，联网验证是否仍有效
+     * @return null=校验通过, 其他=失败原因
+     */
+    suspend fun verifyCurrentDevice(context: Context, savedCode: String): String? {
+        if (savedCode.isEmpty()) return "未找到授权记录，请重新激活"
+        return activate(context, savedCode)
     }
 
     private fun fetchLicensesJson(): String? {
@@ -103,7 +106,7 @@ object LicenseChecker {
         } catch (_: Exception) { null }
     }
 
-    // ─── AES 密钥（与 gen_licenses.py 一致） ───
+    // ─── AES 密钥（分段 + XOR 混淆） ───
 
     private val keyParts = listOf("5e8f9a2b", "c7d3e1f4", "a6b9c0d2", "e3f7f818")
     private const val xorMask = 0xA3
