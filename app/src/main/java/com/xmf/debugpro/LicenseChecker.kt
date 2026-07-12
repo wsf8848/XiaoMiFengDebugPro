@@ -37,9 +37,8 @@ object LicenseChecker {
     private const val LICENSES_URL =
         "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/licenses.json"
 
-    // ─── Gitee API 令牌（分段 + XOR 混淆） ───
-    // 令牌：a50a4b9869e1255d2dc8859f800e2222
-    private val tokenParts = listOf("a50a4b98", "69e1255d", "2dc8859f", "800e2222")
+    // ─── Gitee API 令牌（分段 + XOR 混淆，存储混淆值，运行时还原） ───
+    private val tokenParts = listOf("=il=h>ed", "je9mnii8", "n8?ddie:", "dll9nnnn")
     private const val tokenXorMask = 0x5C
     private const val GITEE_OWNER = "jiang-yimingouu"
     private const val GITEE_REPO = "xiao-mi-feng-debug-pro"

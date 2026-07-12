@@ -1,8 +1,8 @@
 {
-  "version": "1.8.1",
-  "versionCode": 34,
-  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.8.1.apk",
-  "notes": "修复：激活后自动将设备ID写回Gitee仓库，真正实现一机一码",
+  "version": "1.8.2",
+  "versionCode": 35,
+  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.8.2.apk",
+  "notes": "修复：令牌XOR编解码错误导致无法连接授权服务器",
   "date": "2026-07-12",
   "apkSize": 0
 }
