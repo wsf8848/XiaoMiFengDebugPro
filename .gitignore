@@ -12,6 +12,8 @@
 *.ap_
 *.dex
 *.class
+# OTA APK files in dist/ must be tracked
+!dist/*.apk
 
 # App build outputs
 /app/build/
