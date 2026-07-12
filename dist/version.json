@@ -1,8 +1,8 @@
 {
-  "version": "1.8.0",
-  "versionCode": 33,
-  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.8.0.apk",
-  "notes": "安全加固：每次启动静默授权校验 + ProGuard最高混淆 + 关闭1010调试后门 + 多维设备指纹",
+  "version": "1.8.1",
+  "versionCode": 34,
+  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.8.1.apk",
+  "notes": "修复：激活后自动将设备ID写回Gitee仓库，真正实现一机一码",
   "date": "2026-07-12",
   "apkSize": 0
 }

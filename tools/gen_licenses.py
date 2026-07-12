@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 小蜜蜂调试助手Pro — 在线授权码管理工具
 
@@ -103,6 +102,8 @@ if __name__ == "__main__":
                 codes.add(c)
                 licenses.append({"code": c, "device": "", "buyer": ""})
         save_licenses(licenses)
+        from xl_export import export_licenses_excel
+        export_licenses_excel(licenses, os.path.join(OUT_DIR, "dist"))
         print(f"已生成 {len(licenses)} 个授权码，前 5 个：")
         for l in licenses[:5]:
             print(f"  {l['code']}")
