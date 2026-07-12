@@ -64,8 +64,14 @@ object LicenseChecker {
         val normalized = inputCode.trim().uppercase()
         try {
             val deviceId = getDeviceId(context)
-            // 获取 licenses.json（通过 Gitee API 获取 SHA 和内容）
-            val (sha, encrypted) = fetchLicensesWithSha() ?: return@withContext "无法连接授权服务器"
+            // 获取 licenses.json：读取用 raw URL（稳定），写回用 API
+            val fetchResult = fetchLicensesWithSha() ?: return@withContext "无法连接授权服务器"
+            val (sha, fileContent) = fetchResult
+            // fileContent 是 base64 编码的完整文件内容，需先解码再取 encrypted 字段
+            val fileJson = try {
+                org.json.JSONObject(String(Base64.decode(fileContent, Base64.DEFAULT), Charsets.UTF_8))
+            } catch (_: Exception) { return@withContext "授权数据异常" }
+            val encrypted = fileJson.optString("encrypted", "") ?: return@withContext "授权数据异常"
             val lines = decryptLicenses(encrypted)?.split("\n") ?: return@withContext "授权数据异常"
 
             val newLines = mutableListOf<String>()
@@ -99,7 +105,17 @@ object LicenseChecker {
             if (boundToDevice) {
                 try {
                     val newEncrypted = encryptLicenses(newLines.joinToString("\n"))
-                    pushToGitee(sha, newEncrypted, "激活绑定 $normalized")
+                    // 构建完整的 licenses.json 内容 → base64 → 推送
+                    val newFileJson = org.json.JSONObject().apply {
+                        put("version", 1)
+                        put("updated", java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date()))
+                        put("encrypted", newEncrypted)
+                    }
+                    val newContentBase64 = Base64.encodeToString(
+                        newFileJson.toString().toByteArray(Charsets.UTF_8),
+                        Base64.NO_WRAP
+                    )
+                    pushToGitee(sha, newContentBase64, "激活绑定 $normalized")
                 } catch (e: Exception) {
                     Log.w(TAG, "写回失败但激活成功", e)
                     // 写回失败但激活成功（下次静默校验会重试绑定）
