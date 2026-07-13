@@ -15,16 +15,20 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * OTA 更新管理器
+ * OTA 更新管理器 — 服务器 API 版
  *
- * 修复：Gitee CDN 重定向处理 + 直接流式下载（替代 DownloadManager）
- * 下载流程：HTTP 直连（自动跟随重定向）→ 写入缓存目录 → 安装
+ * 流程：
+ * 1. GET /api/version 获取最新版本信息
+ * 2. 比较版本号，有新版本则提示更新
+ * 3. 通过 /api/download/ 流式下载 APK
+ * 4. 自动安装
  */
 class OtaManager(private val context: Context) {
 
     companion object {
-        private const val OTA_VERSION_URL =
-            "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/version.json"
+        private const val SERVER_BASE = "http://43.138.223.90:5000"
+        private const val API_VERSION = "$SERVER_BASE/api/version"
+        private const val API_DOWNLOAD = "$SERVER_BASE/api/download/"
         private const val TAG = "OtaManager"
     }
 
@@ -40,25 +44,23 @@ class OtaManager(private val context: Context) {
     suspend fun check(): VersionInfo? = withContext(Dispatchers.IO) {
         try {
             val currentVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
-            val remoteInfo = fetchVersionJson(OTA_VERSION_URL) ?: return@withContext null
-            if (compareVersions(remoteInfo.version, currentVersion) > 0) return@withContext remoteInfo
-            null
+            val remoteInfo = fetchVersionFromServer() ?: return@withContext null
+            if (compareVersions(remoteInfo.version, currentVersion) > 0) remoteInfo else null
         } catch (e: Exception) {
             Log.w(TAG, "检查更新失败", e); null
         }
     }
 
     /**
-     * 下载 APK — 使用 HTTP 流式下载（自动处理 Gitee CDN 重定向）
+     * 下载 APK — 从服务器流式下载
      */
     fun downloadAndInstall(info: VersionInfo, onProgress: (Int) -> Unit = {}, onFinish: (Boolean) -> Unit = {}) {
         Thread {
             try {
                 val apkName = info.url.substringAfterLast("/")
-                val downloadUrl = "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/$apkName"
+                val downloadUrl = "$API_DOWNLOAD$apkName"
                 Log.d(TAG, "下载: $downloadUrl")
 
-                // 建立连接，自动跟随重定向
                 val url = URL(downloadUrl)
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 15000
@@ -88,12 +90,10 @@ class OtaManager(private val context: Context) {
                 onProgress(100)
                 Log.d(TAG, "下载完成: ${cacheFile.absolutePath}")
 
-                // 安装
                 installApk(Uri.fromFile(cacheFile))
                 onFinish(true)
             } catch (e: Exception) {
                 Log.e(TAG, "下载失败", e)
-                // 兜底：浏览器下载
                 try {
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.url)).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -116,20 +116,22 @@ class OtaManager(private val context: Context) {
         context.startActivity(intent)
     }
 
-    private fun fetchVersionJson(urlStr: String): VersionInfo? {
-        val url = URL(urlStr)
+    private fun fetchVersionFromServer(): VersionInfo? {
+        val url = URL(API_VERSION)
         val conn = url.openConnection() as HttpURLConnection
         conn.apply { connectTimeout = 10000; readTimeout = 10000; requestMethod = "GET" }
         return try {
             val reader = BufferedReader(InputStreamReader(conn.inputStream, "utf-8"))
             val text = reader.readText(); reader.close()
             val json = org.json.JSONObject(text)
+            if (!json.optBoolean("success", false)) return null
+            val data = json.getJSONObject("data")
             VersionInfo(
-                version = json.getString("version"),
-                versionCode = json.getInt("versionCode"),
-                url = json.getString("url"),
-                notes = json.optString("notes", "有新版本可用"),
-                apkSize = json.optLong("apkSize", 0)
+                version = data.getString("version"),
+                versionCode = data.getInt("versionCode"),
+                url = data.getString("url"),
+                notes = data.optString("notes", "有新版本可用"),
+                apkSize = data.optLong("apkSize", 0)
             )
         } finally { conn.disconnect() }
     }

@@ -1,8 +1,11 @@
 {
-  "version": "1.8.2",
-  "versionCode": 35,
-  "url": "https://gitee.com/jiang-yimingouu/xiao-mi-feng-debug-pro/raw/master/dist/%E5%B0%8F%E8%9C%9C%E8%9C%82%E8%B0%83%E8%AF%95%E5%8A%A9%E6%89%8BPro_v1.8.2.apk",
-  "notes": "修复：令牌XOR编解码错误导致无法连接授权服务器",
-  "date": "2026-07-12",
-  "apkSize": 0
+  "version": "1.8.3",
+  "versionCode": 36,
+  "url": "http://43.138.223.90:5000/api/download/xiaomifeng_v1.8.3.apk",
+  "notes": "v1.8.3 — 授权和OTA改为自建服务器，无需Gitee",
+  "date": "2026-07-13",
+  "apkSize": 5694711,
+  "server": "http://43.138.223.90:5000",
+  "appKey": "a87653c3e09fe29c47db52dcd7be3a58",
+  "adminKey": "3c1477a8da0c538047babb76ebbfed86"
 }
