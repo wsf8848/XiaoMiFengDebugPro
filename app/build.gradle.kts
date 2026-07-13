@@ -11,8 +11,8 @@ android {
         applicationId = "com.xmf.debugpro"
         minSdk = 26
         targetSdk = 34
-        versionCode = 36
-        versionName = "1.8.3"
+        versionCode = 37
+        versionName = "1.8.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
