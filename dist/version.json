@@ -1,8 +1,8 @@
 {
-  "version": "1.8.4",
-  "versionCode": 37,
-  "url": "http://43.138.223.90:5000/api/download/xiaomifeng_v1.8.4.apk",
-  "notes": "正式发布版 — 授权和OTA全面迁移至自建服务器",
+  "version": "1.8.5",
+  "versionCode": 38,
+  "url": "http://43.138.223.90:5000/api/download/xiaomifeng_v1.8.5.apk",
+  "notes": "修复：OTA更新不再弹出浏览器，下载后直接自动安装；移除Gitee依赖",
   "date": "2026-07-13",
   "apkSize": 5694711,
   "server": "http://43.138.223.90:5000",

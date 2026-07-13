@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -90,16 +91,13 @@ class OtaManager(private val context: Context) {
                 onProgress(100)
                 Log.d(TAG, "下载完成: ${cacheFile.absolutePath}")
 
-                installApk(Uri.fromFile(cacheFile))
+                // 使用 FileProvider 获取 content:// URI（Android 7+ 必须）
+                val apkUri = FileProvider.getUriForFile(context,
+                    "${context.packageName}.fileprovider", cacheFile)
+                installApk(apkUri)
                 onFinish(true)
             } catch (e: Exception) {
-                Log.e(TAG, "下载失败", e)
-                try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(info.url)).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
-                } catch (_: Exception) {}
+                Log.e(TAG, "下载或安装失败", e)
                 onFinish(false)
             }
         }.apply { isDaemon = true }.start()
