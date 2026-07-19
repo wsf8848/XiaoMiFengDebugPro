@@ -24,6 +24,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.speech.tts.TextToSpeech
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -342,6 +343,9 @@ private fun AppScreen() {
 
     // ── BLE 连接事件监听 ──
     LaunchedEffect(Unit) {
+        // 接收缓冲区：累积字节用于粘包重组
+        val recvBuf = mutableListOf<Byte>()
+        var lastUiMs = 0L
         bleConnector.setEventListener { event ->
             when (event) {
                 is BleConnEvent.Connected -> {
@@ -359,17 +363,18 @@ private fun AppScreen() {
                     connectedName = "未连接"; connectedAddress = "--"
                     latestMessage = event.reason
                     doSpeak("设备已断开"); doVibrate()
+                    recvBuf.clear()  // 断开时清空接收缓冲区
                 }
                 is BleConnEvent.Received -> {
-                    val hx = event.bytes.joinToString(" ") { b -> "%02X".format(b) }
-                    val u8 = try { event.bytes.toString(StandardCharsets.UTF_8).replace("\r","").replace("\n","\\n") } catch (_:Exception) { "" }
-                    appendLog(false, if (receiveHex) hx else (u8.ifBlank { "<$hx>" }))
-                    // 在接收缓冲区中查找所有匹配的协议包（支持多包合并）
-                    val buf = event.bytes
+                    // 1️⃣ 追加到接收缓冲区（粘包重组：应对 MTU 分包/高频连续包）
+                    recvBuf.addAll(event.bytes.toList())
+                    val buf = ByteArray(recvBuf.size) { recvBuf[it] }
+                    // 2️⃣ 扫描缓冲区解析协议包
                     var i = 0
                     var hasJoy = false; var hasCustom = false
+                    var matchedEnd = 0
                     while (i < buf.size) {
-                        // 查找摇杆数据包：0x55 0x5A + 6字节数据 + 0x5B (共9字节)
+                        // 摇杆数据包：0x55 0x5A + 6字节数据 + 0x5B (共9字节)
                         if (i + 8 < buf.size && buf[i] == 0x55.toByte() && buf[i+1] == 0x5A.toByte() && buf[i+8] == 0x5B.toByte()) {
                             joyLeftWheel = (buf[i+2].toInt() and 0xFF).toString()
                             joyGyro = (buf[i+3].toInt() and 0xFF).toString()
@@ -377,22 +382,36 @@ private fun AppScreen() {
                             joyBattery = (buf[i+5].toInt() and 0xFF).toString()
                             joyMode = (buf[i+6].toInt() and 0xFF).toString()
                             joyStatus = (buf[i+7].toInt() and 0xFF).toString()
-                            hasJoy = true; i += 9; continue
+                            hasJoy = true; matchedEnd = i + 9; i += 9; continue
                         }
-                        // 查找自定义协议包：0x2C 0x12 + N字节数据 + 0x5B (最少6字节)
+                        // 自定义协议包：0x2C 0x12 + N字节数据 + 0x5B (最少6字节)
                         if (i + 5 < buf.size && buf[i] == 0x2C.toByte() && buf[i+1] == 0x12.toByte()) {
-                            // 从当前位置向后找 0x5B 包尾
                             val tailIdx = (i+2 until buf.size).find { buf[it] == 0x5B.toByte() }
                             if (tailIdx != null && tailIdx > i+1) {
                                 val dataBytes = buf.sliceArray(i+2 until tailIdx)
                                 customProtocolData = dataBytes.joinToString(" ") { (it.toInt() and 0xFF).toString() }
-                                hasCustom = true; i = tailIdx + 1; continue
+                                hasCustom = true; matchedEnd = tailIdx + 1; i = tailIdx + 1; continue
                             }
                         }
                         i++
                     }
-                    // 强制刷新计数器，确保 Compose UI 更新
-                    if (hasJoy || hasCustom) bleDataSeq++
+                    // 3️⃣ 移除已匹配的字节，保留未匹配部分（可能是下个包的前半段）
+                    if (matchedEnd > 0) {
+                        repeat(matchedEnd) { if (recvBuf.isNotEmpty()) recvBuf.removeFirst() }
+                    }
+                    // 4️⃣ 日志：限流（最多保留 500 条，防止列表卡顿）
+                    val hx = event.bytes.joinToString(" ") { b -> "%02X".format(b) }
+                    val u8 = try { event.bytes.toString(StandardCharsets.UTF_8).replace("\r","").replace("\n","\\n") } catch (_:Exception) { "" }
+                    if (logEntries.size >= 500) logEntries.removeAt(0)
+                    appendLog(false, if (receiveHex) hx else (u8.ifBlank { "<$hx>" }))
+                    // 5️⃣ UI 刷新限速：最高 ~20Hz（每 50ms 只刷一次）
+                    if (hasJoy || hasCustom) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastUiMs >= 50) {
+                            bleDataSeq++
+                            lastUiMs = now
+                        }
+                    }
                 }
                 is BleConnEvent.Sent -> {
                     val hx = event.bytes.joinToString(" ") { b -> "%02X".format(b) }
@@ -1288,7 +1307,7 @@ private fun DrawerPage(
                     Text("小蜜蜂调试助手", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(4.dp))
                     Text("BLE串口调试终端", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
-                    Text("v1.8.5", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
+                    Text("v1.8.6", color = Color(0xFFFFE2B0), style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1468,6 +1487,7 @@ private sealed class BleConnEvent {
 // ─── 真实 BLE 连接器 ───────────────────────────────────────────────────
 
 private class BleConnector(private val context: Context) {
+    companion object { private const val TAG = "BleConnector" }
     private val adapter: BluetoothAdapter? = (context.getSystemService(BluetoothManager::class.java))?.adapter
     private val mainHandler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
@@ -1573,10 +1593,16 @@ private class BleConnector(private val context: Context) {
                 return
             }
             enableNotification(gatt, notifyChar!!)
+            // 请求 MTU 提升（默认 23 字节，提升后减少分包）
+            try { gatt.requestMtu(512) } catch (_: Exception) {}
             // 通知上层已连接
             connectedItem?.let { item ->
                 mainHandler.post { listener?.invoke(BleConnEvent.Connected(item)) }
             }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            Log.d(TAG, "MTU 协商完成: $mtu")
         }
 
         @SuppressLint("MissingPermission")

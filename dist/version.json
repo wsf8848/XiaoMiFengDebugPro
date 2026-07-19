@@ -1,10 +1,10 @@
 {
-  "version": "1.8.5",
-  "versionCode": 38,
-  "url": "http://43.138.223.90:5000/api/download/xiaomifeng_v1.8.5.apk",
-  "notes": "修复：OTA更新不再弹出浏览器，下载后直接自动安装；移除Gitee依赖",
-  "date": "2026-07-13",
-  "apkSize": 5694711,
+  "version": "1.8.6",
+  "versionCode": 39,
+  "url": "http://43.138.223.90:5000/api/download/xiaomifeng_v1.8.6.apk",
+  "notes": "修复100Hz高频BLE数据接收丢包问题：MTU协商512+粘包重组缓冲区+UI限流20Hz+日志裁剪500条",
+  "date": "2026-07-19",
+  "apkSize": 5694839,
   "server": "http://43.138.223.90:5000",
   "appKey": "a87653c3e09fe29c47db52dcd7be3a58",
   "adminKey": "3c1477a8da0c538047babb76ebbfed86"
